@@ -1,11 +1,11 @@
 import { cn } from '../../lib/utils';
 
 export function Card({ className, children }: { className?: string; children: React.ReactNode }) {
-  return <div className={cn('rounded-xl border border-line bg-white shadow-soft', className)}>{children}</div>;
+  return <div className={cn('panel-surface overflow-hidden', className)}>{children}</div>;
 }
 
 export function CardHeader({ className, children }: { className?: string; children: React.ReactNode }) {
-  return <div className={cn('border-b border-line px-4 py-4', className)}>{children}</div>;
+  return <div className={cn('border-b border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-4 py-4', className)}>{children}</div>;
 }
 
 export function CardContent({ className, children }: { className?: string; children: React.ReactNode }) {

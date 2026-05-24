@@ -13,6 +13,17 @@ export type Account = {
   created_at: string;
 };
 
+export type ProxyItem = {
+  id: number;
+  label: string;
+  proxy: string;
+  enabled: boolean;
+  status: string;
+  last_checked_at: string | null;
+  last_error: string | null;
+  created_at: string;
+};
+
 export type Task = {
   id: number;
   user_id: number;
@@ -29,6 +40,50 @@ export type Task = {
   config?: Record<string, unknown>;
   log?: string;
   files?: Array<{ name: string; size: number }>;
+  summary?: TaskSummary;
+};
+
+export type TaskSummary = {
+  csv_files: number;
+  records: number;
+  media_records: number;
+  favorites: number;
+  retweets: number;
+  replies: number;
+  top_urls: string[];
+  files: number;
+  media_files: number;
+  total_bytes: number;
+};
+
+export type Dashboard = {
+  totals: {
+    tasks: number;
+    running: number;
+    completed: number;
+    failed: number;
+    files: number;
+    media_files: number;
+    records: number;
+    api_calls: number;
+    downloads: number;
+  };
+  accounts: Record<string, number>;
+  recent_tasks: Array<{
+    id: number;
+    title: string;
+    task_type: string;
+    status: string;
+    created_at: string;
+    target: string;
+    summary: TaskSummary;
+  }>;
+  templates: Array<{
+    name: string;
+    description: string;
+    payload: Record<string, unknown>;
+  }>;
+  compliance_notes: string[];
 };
 
 export type ApiError = {
@@ -67,6 +122,8 @@ export type RunConfig = {
   log_output: boolean;
   max_concurrent_requests: number;
   proxy: string;
+  proxy_id?: number | null;
+  proxies?: ProxyItem[];
   md_output: boolean;
   media_count_limit: number;
   project_path?: string;

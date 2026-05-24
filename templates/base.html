@@ -9,19 +9,11 @@
 <body>
   <header class="topbar">
     <a class="brand" href="/tasks">Twitter Download Web</a>
-    {% if user %}
-      <nav>
-        <a href="/tasks">任务</a>
-        <a href="/tasks/new">新建</a>
-        {% if user.role == "admin" %}
-          <a href="/accounts">X账号</a>
-        {% endif %}
-      </nav>
-      <form method="post" action="/logout" class="logout">
-        <span>{{ user.username }}</span>
-        <button type="submit">退出</button>
-      </form>
-    {% endif %}
+    <nav>
+      <a href="/tasks">任务</a>
+      <a href="/tasks/new">新建</a>
+      <a href="/accounts">X账号</a>
+    </nav>
   </header>
   <main class="shell">
     {% block content %}{% endblock %}

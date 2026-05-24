@@ -1,6 +1,9 @@
+import asyncio
+import csv
 import hashlib
 import json
 import os
+import re
 import signal
 import secrets
 import sqlite3
@@ -15,10 +18,9 @@ from threading import Thread
 
 import httpx
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from starlette.middleware.sessions import SessionMiddleware
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -27,11 +29,12 @@ TASKS_DIR = DATA_DIR / 'tasks'
 DB_PATH = DATA_DIR / 'web.sqlite3'
 DEFAULT_ADMIN_USER = os.environ.get('TW_WEB_ADMIN_USER', 'admin')
 DEFAULT_ADMIN_PASSWORD = os.environ.get('TW_WEB_ADMIN_PASSWORD', 'admin123')
-SESSION_SECRET = os.environ.get('TW_WEB_SESSION_SECRET', secrets.token_hex(32))
+INTERNAL_USER = {'id': 1, 'username': DEFAULT_ADMIN_USER, 'role': 'admin'}
 
 app = FastAPI(title='Twitter Download Web')
-app.add_middleware(SessionMiddleware, secret_key=SESSION_SECRET, same_site='lax')
 app.mount('/static', StaticFiles(directory=str(BASE_DIR / 'static')), name='static')
+if (BASE_DIR / 'frontend' / 'dist' / 'assets').exists():
+    app.mount('/assets', StaticFiles(directory=str(BASE_DIR / 'frontend' / 'dist' / 'assets')), name='frontend-assets')
 templates = Jinja2Templates(directory=str(BASE_DIR / 'templates'))
 
 worker_lock = threading.Lock()
@@ -101,6 +104,16 @@ def init_db():
                 last_checked_at text,
                 created_at text not null
             );
+            create table if not exists proxies (
+                id integer primary key autoincrement,
+                label text not null,
+                proxy text not null,
+                enabled integer not null default 1,
+                status text not null default 'active',
+                last_checked_at text,
+                last_error text,
+                created_at text not null
+            );
             create table if not exists tasks (
                 id integer primary key autoincrement,
                 user_id integer not null,
@@ -128,39 +141,25 @@ def init_db():
 
 
 def current_user(request: Request):
-    user_id = request.session.get('user_id')
-    if not user_id:
-        return None
     with db() as conn:
-        return conn.execute('select * from users where id = ?', (user_id,)).fetchone()
+        user = conn.execute('select * from users where username = ?', (DEFAULT_ADMIN_USER,)).fetchone()
+    return user or INTERNAL_USER
 
 
 def require_user(request: Request):
-    user = current_user(request)
-    if not user:
-        raise HTTPException(status_code=303, headers={'Location': '/login'})
-    return user
+    return current_user(request)
 
 
 def require_admin(request: Request):
-    user = require_user(request)
-    if user['role'] != 'admin':
-        raise HTTPException(status_code=403, detail='Admin only')
-    return user
+    return require_user(request)
 
 
 def require_api_user(request: Request):
-    user = current_user(request)
-    if not user:
-        raise HTTPException(status_code=401, detail='未登录')
-    return user
+    return current_user(request)
 
 
 def require_api_admin(request: Request):
-    user = require_api_user(request)
-    if user['role'] != 'admin':
-        raise HTTPException(status_code=403, detail='需要管理员权限')
-    return user
+    return require_api_user(request)
 
 
 def row_to_dict(row):
@@ -182,7 +181,21 @@ def account_payload(account):
     }
 
 
+def proxy_payload(proxy):
+    return {
+        'id': proxy['id'],
+        'label': proxy['label'],
+        'proxy': proxy['proxy'],
+        'enabled': bool(proxy['enabled']),
+        'status': proxy['status'],
+        'last_checked_at': proxy['last_checked_at'],
+        'last_error': proxy['last_error'],
+        'created_at': proxy['created_at'],
+    }
+
+
 def task_payload(task, include_config=False, include_log=False, include_files=False):
+    summary = task_summary(task)
     payload = {
         'id': task['id'],
         'user_id': task['user_id'],
@@ -196,10 +209,11 @@ def task_payload(task, include_config=False, include_log=False, include_files=Fa
         'started_at': task['started_at'],
         'finished_at': task['finished_at'],
         'process_id': task['process_id'],
+        'summary': summary,
     }
     if include_config:
         try:
-            payload['config'] = json.loads(task['config_json'])
+            payload['config'] = public_config(json.loads(task['config_json']))
         except Exception:
             payload['config'] = {}
     if include_log:
@@ -209,14 +223,167 @@ def task_payload(task, include_config=False, include_log=False, include_files=Fa
     return payload
 
 
+def redact_sensitive(value):
+    if not value:
+        return ''
+    text = str(value)
+    text = re.sub(r'(auth_token=)[^;\s]+', r'\1[已隐藏]', text)
+    text = re.sub(r'(ct0=)[^;\s]+', r'\1[已隐藏]', text)
+    text = re.sub(r'("auth_token"\s*:\s*")[^"]+', r'\1[已隐藏]', text)
+    text = re.sub(r'("ct0"\s*:\s*")[^"]+', r'\1[已隐藏]', text)
+    text = re.sub(r'("cookie"\s*:\s*")[^"]+', r'\1[已隐藏]', text)
+    return text
+
+
+def public_config(config):
+    clean = dict(config or {})
+    for key in ['cookie', 'auth_token', 'ct0']:
+        if key in clean and clean[key]:
+            clean[key] = '[已隐藏]'
+    return clean
+
+
+def task_target_label(config):
+    target = config.get('targets') or config.get('tag') or config.get('advanced_filter') or config.get('search_advanced') or ''
+    if isinstance(target, list):
+        target = ', '.join(str(item) for item in target)
+    return str(target).replace('\r', ' ').replace('\n', ' ').strip() or '未填写'
+
+
 def task_files(task):
     output_dir = Path(task['output_dir'])
     files = []
     if output_dir.exists():
         for path in sorted(output_dir.rglob('*')):
-            if path.is_file() and path.name not in {'account_session.json'}:
+            if path.is_file() and path.name not in {'account_session.json'} and not path.name.startswith('task-'):
                 files.append({'name': str(path.relative_to(output_dir)), 'size': path.stat().st_size})
     return files
+
+
+def locate_csv_header(rows):
+    known = {'Tweet URL', 'Reply URL', 'Media URL', 'Favorite Count', 'Reply Favorite Count', 'Tweet Content', 'Reply Content'}
+    for index, row in enumerate(rows):
+        if known.intersection(set(row)):
+            return index, row
+    return None, []
+
+
+def number_from_row(row, headers, names):
+    for name in names:
+        if name in headers:
+            try:
+                return int(float(row[headers.index(name)] or 0))
+            except Exception:
+                return 0
+    return 0
+
+
+def csv_summary(output_dir):
+    rows_count = 0
+    media_rows = 0
+    favorites = 0
+    retweets = 0
+    replies = 0
+    urls = {}
+    csv_files = []
+    for path in sorted(Path(output_dir).rglob('*.csv')):
+        csv_files.append(path)
+        try:
+            with open(path, 'r', encoding='utf-8-sig', errors='replace', newline='') as f:
+                rows = list(csv.reader(f))
+        except Exception:
+            continue
+        header_index, headers = locate_csv_header(rows)
+        if header_index is None:
+            continue
+        for row in rows[header_index + 1:]:
+            if not row or len(row) < len(headers):
+                continue
+            rows_count += 1
+            if 'Media URL' in headers and row[headers.index('Media URL')]:
+                media_rows += 1
+            favorites += number_from_row(row, headers, ['Favorite Count', 'Reply Favorite Count'])
+            retweets += number_from_row(row, headers, ['Retweet Count', 'Reply Retweet Count'])
+            replies += number_from_row(row, headers, ['Reply Count', 'Reply Reply Count'])
+            url = ''
+            for field in ['Tweet URL', 'Reply URL', 'Parent Tweet URL']:
+                if field in headers:
+                    url = row[headers.index(field)]
+                    break
+            score = number_from_row(row, headers, ['Favorite Count', 'Reply Favorite Count']) + number_from_row(row, headers, ['Retweet Count', 'Reply Retweet Count']) + number_from_row(row, headers, ['Reply Count', 'Reply Reply Count'])
+            if url:
+                urls[url] = max(urls.get(url, 0), score)
+    top_urls = [url for url, _ in sorted(urls.items(), key=lambda item: item[1], reverse=True)[:5]]
+    return {
+        'csv_files': len(csv_files),
+        'records': rows_count,
+        'media_records': media_rows,
+        'favorites': favorites,
+        'retweets': retweets,
+        'replies': replies,
+        'top_urls': top_urls,
+    }
+
+
+def task_summary(task):
+    output_dir = Path(task['output_dir'])
+    files = task_files(task)
+    csv_data = csv_summary(output_dir) if output_dir.exists() else {
+        'csv_files': 0,
+        'records': 0,
+        'media_records': 0,
+        'favorites': 0,
+        'retweets': 0,
+        'replies': 0,
+        'top_urls': [],
+    }
+    media_exts = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.mp4', '.mov'}
+    media_files = [item for item in files if Path(item['name']).suffix.lower() in media_exts]
+    return {
+        **csv_data,
+        'files': len(files),
+        'media_files': len(media_files),
+        'total_bytes': sum(item['size'] for item in files),
+    }
+
+
+def write_summary_report(task):
+    output_dir = Path(task['output_dir'])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        config = json.loads(task['config_json'])
+    except Exception:
+        config = {}
+    summary = task_summary(task)
+    report_path = output_dir / 'summary_report.md'
+    lines = [
+        '# X/Twitter 舆情采集摘要',
+        '',
+        f'- 任务: {task["title"]}',
+        f'- 类型: {task["task_type"]}',
+        f'- 目标: {task_target_label(config)}',
+        f'- 时间范围: {config.get("time_range") or "-"}',
+        f'- 状态: {task["status"]}',
+        f'- 记录数: {summary["records"]}',
+        f'- 媒体记录数: {summary["media_records"]}',
+        f'- 媒体文件数: {summary["media_files"]}',
+        f'- CSV 文件数: {summary["csv_files"]}',
+        f'- 点赞/转推/评论合计: {summary["favorites"]}/{summary["retweets"]}/{summary["replies"]}',
+        '',
+        '## Top 链接',
+        '',
+    ]
+    if summary['top_urls']:
+        lines.extend(f'- {url}' for url in summary['top_urls'])
+    else:
+        lines.append('- 暂无可统计链接')
+    lines.extend([
+        '',
+        '## 合规边界',
+        '',
+        '本报告用于内部研究和授权账号下的数据整理；平台限流、内容版权、隐私和官方 API 政策需要在生产化前单独确认。',
+    ])
+    report_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
 
 def task_status_class(status):
@@ -226,12 +393,23 @@ def task_status_class(status):
         'completed': 'success',
         'failed': 'danger',
         'cancelled': 'danger',
+        'partial_failed': 'warning',
         'rate_limited': 'warning',
         'auth_expired': 'warning',
+        'network_failed': 'warning',
+        'target_unavailable': 'warning',
+        'api_changed': 'danger',
     }.get(status, 'muted')
 
 
 templates.env.globals['status_class'] = task_status_class
+
+
+def frontend_index():
+    index_path = BASE_DIR / 'frontend' / 'dist' / 'index.html'
+    if index_path.exists():
+        return FileResponse(index_path)
+    return None
 
 
 def read_log(path, max_chars=12000):
@@ -239,7 +417,7 @@ def read_log(path, max_chars=12000):
         return ''
     with open(path, 'r', encoding='utf-8', errors='replace') as f:
         data = f.read()
-    return data[-max_chars:]
+    return redact_sensitive(data[-max_chars:])
 
 
 def parse_run_summary(line):
@@ -255,7 +433,7 @@ def parse_run_summary(line):
 
 
 def append_run_log(line):
-    line = line.rstrip()
+    line = redact_sensitive(line.rstrip())
     if not line:
         return
     run_state['logs'].append(line)
@@ -286,6 +464,22 @@ def run_snapshot():
 def active_accounts():
     with db() as conn:
         return conn.execute("select * from accounts where status = 'active' order by id desc").fetchall()
+
+
+def active_proxies():
+    with db() as conn:
+        return conn.execute("select * from proxies where enabled = 1 order by id desc").fetchall()
+
+
+def validate_proxy(proxy_url):
+    try:
+        r = httpx.get('https://api.ipify.org?format=json', proxy=proxy_url, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            return True, data.get('ip') or '', ''
+        return False, '', f'HTTP {r.status_code}: {r.text[:200]}'
+    except Exception as exc:
+        return False, '', str(exc)
 
 
 def build_runtime_settings(config: dict):
@@ -454,8 +648,14 @@ def classify_failure(log_text, return_code):
     lower = log_text.lower()
     if 'rate limit exceeded' in lower or 'api次数已超限' in log_text:
         return 'rate_limited', 'X API 次数已超限'
-    if 'auth' in lower or 'ct0' in lower or '401' in lower or '403' in lower:
-        return 'auth_expired', 'X 会话可能失效'
+    if 'auth' in lower or 'ct0' in lower or 'cookie' in lower or '401' in lower or '403' in lower or '认证' in log_text:
+        return 'auth_expired', 'X 会话可能失效或权限不足'
+    if 'timeout' in lower or 'proxy' in lower or 'connection' in lower or 'network' in lower or '连接' in log_text or '代理' in log_text:
+        return 'network_failed', '网络或代理异常'
+    if 'not found' in lower or '404' in lower or '不可见' in log_text or '不存在' in log_text:
+        return 'target_unavailable', '目标不存在、不可访问或内容权限不足'
+    if 'keyerror' in lower or 'list index out of range' in lower or 'graphql' in lower or '接口' in log_text:
+        return 'api_changed', 'X 接口结构可能已变化'
     return 'failed', f'任务失败, 退出码 {return_code}'
 
 
@@ -518,6 +718,8 @@ def run_task(task):
             stdout=log_file,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding='utf-8',
+            errors='replace',
         )
         with db() as conn:
             conn.execute(
@@ -531,11 +733,18 @@ def run_task(task):
         status, error = 'completed', None
     else:
         status, error = classify_failure(log_text, return_code)
+        summary = task_summary(task)
+        if summary['records'] or summary['files']:
+            status = 'partial_failed'
+            error = f'{error}；已保留部分采集结果'
     with db() as conn:
         conn.execute(
             'update tasks set status = ?, error = ?, finished_at = ?, process_id = null where id = ?',
             (status, error, now(), task['id']),
         )
+        refreshed = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id where tasks.id = ?', (task['id'],)).fetchone()
+    if refreshed:
+        write_summary_report(refreshed)
 
 
 @app.on_event('startup')
@@ -546,37 +755,40 @@ def on_startup():
 
 @app.get('/', response_class=HTMLResponse)
 def home(request: Request):
-    index_path = BASE_DIR / 'frontend' / 'dist' / 'index.html'
-    if index_path.exists():
-        return FileResponse(index_path)
-    if not current_user(request):
-        return RedirectResponse('/login')
+    index = frontend_index()
+    if index:
+        return index
+    return RedirectResponse('/tasks')
+
+
+@app.get('/run', response_class=HTMLResponse)
+def run_page(request: Request):
+    index = frontend_index()
+    if index:
+        return index
     return RedirectResponse('/tasks')
 
 
 @app.get('/login', response_class=HTMLResponse)
 def login_page(request: Request):
-    return templates.TemplateResponse('login.html', {'request': request, 'error': None})
+    return RedirectResponse('/run')
 
 
 @app.post('/login')
 def login(request: Request, username: str = Form(...), password: str = Form(...)):
-    with db() as conn:
-        user = conn.execute('select * from users where username = ?', (username,)).fetchone()
-    if not user or not verify_password(password, user['password_hash']):
-        return templates.TemplateResponse('login.html', {'request': request, 'error': '用户名或密码错误'}, status_code=401)
-    request.session['user_id'] = user['id']
-    return RedirectResponse('/tasks', status_code=303)
+    return RedirectResponse('/run', status_code=303)
 
 
 @app.post('/logout')
 def logout(request: Request):
-    request.session.clear()
-    return RedirectResponse('/login', status_code=303)
+    return RedirectResponse('/run', status_code=303)
 
 
 @app.get('/tasks', response_class=HTMLResponse)
 def tasks(request: Request, user=Depends(require_user)):
+    index = frontend_index()
+    if index:
+        return index
     with db() as conn:
         if user['role'] == 'admin':
             rows = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id order by tasks.id desc').fetchall()
@@ -590,6 +802,9 @@ def tasks(request: Request, user=Depends(require_user)):
 
 @app.get('/tasks/new', response_class=HTMLResponse)
 def new_task_page(request: Request, user=Depends(require_user)):
+    index = frontend_index()
+    if index:
+        return index
     accounts = active_accounts()
     return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': None})
 
@@ -621,6 +836,33 @@ def build_task_config(form):
     return config
 
 
+def apply_proxy_selection(config, proxy_id):
+    selected_proxy_id = int(proxy_id or 0)
+    if not selected_proxy_id:
+        return config
+    with db() as conn:
+        proxy = conn.execute('select * from proxies where id = ? and enabled = 1', (selected_proxy_id,)).fetchone()
+    if not proxy:
+        raise HTTPException(status_code=400, detail='所选代理不可用')
+    config['proxy'] = proxy['proxy']
+    config['proxy_id'] = selected_proxy_id
+    return config
+
+
+def validate_task_config(config):
+    task_type = config.get('task_type')
+    if task_type not in {'user_media', 'search', 'text', 'replies', 'profile'}:
+        raise HTTPException(status_code=400, detail='未知任务类型')
+    if task_type in {'user_media', 'text', 'profile'} and not str(config.get('targets') or '').strip():
+        raise HTTPException(status_code=400, detail='请填写目标用户名')
+    if task_type == 'replies' and not str(config.get('targets') or '').strip():
+        raise HTTPException(status_code=400, detail='请填写目标用户或推文链接')
+    if task_type == 'search' and not str(config.get('tag') or config.get('advanced_filter') or '').strip():
+        raise HTTPException(status_code=400, detail='请填写 Tag 或高级搜索条件')
+    if config.get('time_range') and not re.match(r'^\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}$', str(config.get('time_range'))):
+        raise HTTPException(status_code=400, detail='时间范围格式应为 YYYY-MM-DD:YYYY-MM-DD')
+
+
 def title_from_config(config):
     names = {
         'user_media': '用户媒体',
@@ -634,6 +876,90 @@ def title_from_config(config):
     return f'{names.get(config.get("task_type"), config.get("task_type"))} - {target}'
 
 
+def dashboard_payload(user):
+    with db() as conn:
+        if user['role'] == 'admin':
+            rows = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id order by tasks.id desc').fetchall()
+        else:
+            rows = conn.execute(
+                'select tasks.*, users.username from tasks join users on users.id = tasks.user_id where user_id = ? order by tasks.id desc',
+                (user['id'],),
+            ).fetchall()
+        accounts = conn.execute('select status, count(*) as count from accounts group by status').fetchall()
+    tasks_payload = []
+    totals = {
+        'tasks': len(rows),
+        'running': 0,
+        'completed': 0,
+        'failed': 0,
+        'files': 0,
+        'media_files': 0,
+        'records': 0,
+        'api_calls': run_state['summary'].get('api_calls') or 0,
+        'downloads': run_state['summary'].get('downloads') or 0,
+    }
+    for row in rows:
+        summary = task_summary(row)
+        if row['status'] in {'running', 'queued'}:
+            totals['running'] += 1
+        if row['status'] == 'completed':
+            totals['completed'] += 1
+        if row['status'] in {'failed', 'cancelled', 'partial_failed', 'rate_limited', 'auth_expired', 'network_failed', 'target_unavailable', 'api_changed'}:
+            totals['failed'] += 1
+        totals['files'] += summary['files']
+        totals['media_files'] += summary['media_files']
+        totals['records'] += summary['records']
+        try:
+            config = json.loads(row['config_json'])
+        except Exception:
+            config = {}
+        tasks_payload.append({
+            'id': row['id'],
+            'title': row['title'],
+            'task_type': row['task_type'],
+            'status': row['status'],
+            'created_at': row['created_at'],
+            'target': task_target_label(config),
+            'summary': summary,
+        })
+    return {
+        'totals': totals,
+        'accounts': {row['status']: row['count'] for row in accounts},
+        'recent_tasks': tasks_payload[:8],
+        'templates': demo_templates(),
+        'compliance_notes': [
+            '当前版本适合内部研究、演示和授权账号下的数据整理。',
+            'X/Twitter 存在接口限流和平台规则约束，生产化建议迁移到官方 API。',
+            '日志和页面会隐藏 auth_token、ct0 与完整 Cookie，避免截图泄露。',
+        ],
+    }
+
+
+def demo_templates():
+    return [
+        {
+            'name': '重点账号采集',
+            'description': '按用户名采集推文媒体与互动指标，适合竞品账号和重点人物动态归档。',
+            'payload': {'task_type': 'user_media', 'targets': 'elonmusk', 'has_video': True, 'md_output': True},
+        },
+        {
+            'name': '关键词舆情',
+            'description': '按关键词或高级搜索语法采集最新内容，适合热点和品牌词监测。',
+            'payload': {'task_type': 'search', 'tag': 'AI', 'advanced_filter': 'lang:zh min_faves:5', 'down_count': 50, 'media_latest': True},
+        },
+        {
+            'name': '评论区洞察',
+            'description': '围绕指定推文或用户抓取评论，适合观察争议点和高互动反馈。',
+            'payload': {'task_type': 'replies', 'targets': 'https://x.com/user/status/1234567890', 'media_down': True, 'min_replies': 1},
+        },
+        {
+            'name': '主页资料归档',
+            'description': '采集头像、banner 和简介，适合建立账号基础资料库。',
+            'payload': {'task_type': 'profile', 'targets': 'x'},
+        },
+    ]
+
+
 @app.post('/tasks')
 async def create_task(request: Request, user=Depends(require_user)):
     form = await request.form()
@@ -642,6 +968,11 @@ async def create_task(request: Request, user=Depends(require_user)):
     if not account_id:
         return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': '请先选择 X 账号'}, status_code=400)
     config = build_task_config(form)
+    try:
+        apply_proxy_selection(config, form.get('proxy_id'))
+        validate_task_config(config)
+    except HTTPException as exc:
+        return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': exc.detail}, status_code=400)
     task_dir = TASKS_DIR / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     task_dir.mkdir(parents=True, exist_ok=True)
     log_path = task_dir / 'task.log'
@@ -676,6 +1007,9 @@ def get_task_or_404(task_id, user):
 
 @app.get('/tasks/{task_id}', response_class=HTMLResponse)
 def task_detail(task_id: int, request: Request, user=Depends(require_user)):
+    index = frontend_index()
+    if index:
+        return index
     task = get_task_or_404(task_id, user)
     output_dir = Path(task['output_dir'])
     files = []
@@ -724,6 +1058,9 @@ def download_task(task_id: int, user=Depends(require_user)):
 
 @app.get('/accounts', response_class=HTMLResponse)
 def accounts_page(request: Request, user=Depends(require_admin)):
+    index = frontend_index()
+    if index:
+        return index
     with db() as conn:
         rows = conn.execute('select * from accounts order by id desc').fetchall()
     return templates.TemplateResponse('accounts.html', {'request': request, 'user': user, 'accounts': rows, 'message': None, 'error': None})
@@ -802,6 +1139,11 @@ def health():
     return {'ok': True, 'time': now()}
 
 
+@app.get('/api/dashboard')
+def api_dashboard(user=Depends(require_api_user)):
+    return dashboard_payload(user)
+
+
 @app.get('/api/run/config')
 def api_run_config():
     settings_path = BASE_DIR / 'settings.json'
@@ -809,6 +1151,13 @@ def api_run_config():
     if settings_path.exists():
         with open(settings_path, 'r', encoding='utf-8') as f:
             settings = json.load(f)
+    proxies = [proxy_payload(row) for row in active_proxies()]
+    proxy_id = settings.get('proxy_id')
+    if proxy_id:
+        with db() as conn:
+            selected_proxy = conn.execute('select * from proxies where id = ? and enabled = 1', (proxy_id,)).fetchone()
+        if selected_proxy:
+            settings['proxy'] = selected_proxy['proxy']
     return {
         'save_path': settings.get('save_path', ''),
         'user_lst': settings.get('user_lst', ''),
@@ -824,6 +1173,8 @@ def api_run_config():
         'log_output': True,
         'max_concurrent_requests': int(settings.get('max_concurrent_requests', 8) or 8),
         'proxy': settings.get('proxy', ''),
+        'proxies': proxies,
+        'proxy_id': settings.get('proxy_id'),
         'md_output': bool(settings.get('md_output', False)),
         'media_count_limit': int(settings.get('media_count_limit', 350) or 0),
         'project_path': str(BASE_DIR),
@@ -847,6 +1198,13 @@ async def api_run_start(request: Request):
     users = [user.strip().lstrip('@') for user in str(data.get('user_lst', '')).split(',') if user.strip()]
     if not users:
         raise HTTPException(status_code=400, detail='至少填写一个用户名。')
+    proxy_id = int(data.get('proxy_id') or 0)
+    if proxy_id:
+        with db() as conn:
+            proxy = conn.execute('select * from proxies where id = ? and enabled = 1', (proxy_id,)).fetchone()
+        if not proxy:
+            raise HTTPException(status_code=400, detail='所选代理不可用')
+        data['proxy'] = proxy['proxy']
     return start_main_process(data)
 
 
@@ -871,20 +1229,11 @@ async def api_run_logs_stream():
 
 @app.post('/api/login')
 async def api_login(request: Request):
-    data = await request.json()
-    username = (data.get('username') or '').strip()
-    password = data.get('password') or ''
-    with db() as conn:
-        user = conn.execute('select * from users where username = ?', (username,)).fetchone()
-    if not user or not verify_password(password, user['password_hash']):
-        raise HTTPException(status_code=401, detail='用户名或密码错误')
-    request.session['user_id'] = user['id']
-    return {'user': user_payload(user)}
+    return {'user': user_payload(INTERNAL_USER)}
 
 
 @app.post('/api/logout')
 def api_logout(request: Request):
-    request.session.clear()
     return {'ok': True}
 
 
@@ -938,8 +1287,8 @@ async def api_create_task(request: Request, user=Depends(require_api_user)):
             'search_advanced': data.get('search_advanced') or '',
         }
     )
-    if config['task_type'] not in {'user_media', 'search', 'text', 'replies', 'profile'}:
-        raise HTTPException(status_code=400, detail='未知任务类型')
+    apply_proxy_selection(config, data.get('proxy_id'))
+    validate_task_config(config)
     task_dir = TASKS_DIR / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     task_dir.mkdir(parents=True, exist_ok=True)
     log_path = task_dir / 'task.log'
@@ -1007,6 +1356,68 @@ def api_accounts(user=Depends(require_api_admin)):
     return {'accounts': [account_payload(row) for row in rows]}
 
 
+@app.get('/api/proxies')
+def api_proxies(user=Depends(require_api_admin)):
+    with db() as conn:
+        rows = conn.execute('select * from proxies order by id desc').fetchall()
+    return {'proxies': [proxy_payload(row) for row in rows]}
+
+
+@app.post('/api/proxies')
+async def api_add_proxy(request: Request, user=Depends(require_api_admin)):
+    data = await request.json()
+    label = (data.get('label') or '').strip() or 'Proxy'
+    proxy = (data.get('proxy') or '').strip()
+    if not proxy:
+        raise HTTPException(status_code=400, detail='proxy 不能为空')
+    with db() as conn:
+        conn.execute(
+            '''
+            insert into proxies (label, proxy, enabled, status, last_checked_at, last_error, created_at)
+            values (?, ?, 1, 'active', null, null, ?)
+            ''',
+            (label, proxy, now()),
+        )
+    return {'ok': True}
+
+
+@app.post('/api/proxies/{proxy_id}/check')
+def api_check_proxy(proxy_id: int, user=Depends(require_api_admin)):
+    with db() as conn:
+        proxy = conn.execute('select * from proxies where id = ?', (proxy_id,)).fetchone()
+    if not proxy:
+        raise HTTPException(status_code=404, detail='Proxy not found')
+    ok, ip, error = validate_proxy(proxy['proxy'])
+    with db() as conn:
+        conn.execute(
+            'update proxies set status = ?, last_checked_at = ?, last_error = ? where id = ?',
+            ('active' if ok else 'expired', now(), error or None, proxy_id),
+        )
+        refreshed = conn.execute('select * from proxies where id = ?', (proxy_id,)).fetchone()
+    payload = proxy_payload(refreshed)
+    payload['detected_ip'] = ip
+    return {'proxy': payload, 'ok': ok, 'error': error, 'ip': ip}
+
+
+@app.post('/api/proxies/{proxy_id}/toggle')
+def api_toggle_proxy(proxy_id: int, user=Depends(require_api_admin)):
+    with db() as conn:
+        proxy = conn.execute('select * from proxies where id = ?', (proxy_id,)).fetchone()
+        if not proxy:
+            raise HTTPException(status_code=404, detail='Proxy not found')
+        enabled = 0 if proxy['enabled'] else 1
+        conn.execute('update proxies set enabled = ? where id = ?', (enabled, proxy_id))
+        refreshed = conn.execute('select * from proxies where id = ?', (proxy_id,)).fetchone()
+    return {'proxy': proxy_payload(refreshed)}
+
+
+@app.delete('/api/proxies/{proxy_id}')
+def api_delete_proxy(proxy_id: int, user=Depends(require_api_admin)):
+    with db() as conn:
+        conn.execute('delete from proxies where id = ?', (proxy_id,))
+    return {'ok': True}
+
+
 @app.post('/api/accounts/manual')
 async def api_add_account_manual(request: Request, user=Depends(require_api_admin)):
     data = await request.json()
@@ -1050,15 +1461,18 @@ def api_delete_account(account_id: int, user=Depends(require_api_admin)):
 
 @app.get('/{full_path:path}', response_class=HTMLResponse)
 def spa_fallback(full_path: str, request: Request):
-    dist = BASE_DIR / 'frontend' / 'dist'
-    index_path = dist / 'index.html'
     if full_path.startswith('api/'):
         raise HTTPException(status_code=404, detail='Not found')
-    if index_path.exists():
-        return FileResponse(index_path)
-    if not current_user(request):
-        return RedirectResponse('/login')
+    index = frontend_index()
+    if index:
+        return index
     return RedirectResponse('/tasks')
 
 
 init_db()
+
+
+if __name__ == '__main__':
+    import uvicorn
+
+    uvicorn.run(app, host='127.0.0.1', port=8000, log_level='info')
