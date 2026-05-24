@@ -39,6 +39,17 @@ python -m playwright install
 
 推荐优先使用完整 Web 管理端，适合账号管理、代理池、任务队列、运行控制、结果汇报和打包下载。
 
+首次使用或前端代码更新后，先构建 React 管理端：
+
+```bash
+cd frontend
+npm install
+npm run build
+cd ..
+```
+
+然后启动后端：
+
 ```bash
 python web_app.py
 ```
