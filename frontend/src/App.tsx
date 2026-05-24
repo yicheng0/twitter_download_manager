@@ -11,7 +11,9 @@ import { Textarea } from './components/ui/textarea';
 import type { Account, Dashboard, ProxyItem, RunConfig, RunStatus, Task } from './lib/types';
 import { cn } from './lib/utils';
 
-function statusTone(status: string) {
+type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'primary';
+
+function statusTone(status: string): BadgeTone {
   if (status === 'completed' || status === 'active') return 'success';
   if (status === 'running') return 'primary';
   if (status === 'queued' || status === 'rate_limited') return 'warning';
@@ -169,7 +171,7 @@ function DashboardPage() {
                         <div className="mt-1 text-xs text-[hsl(var(--muted))]">{task.task_type}</div>
                       </td>
                       <td className="max-w-[260px] truncate px-4 py-3">{task.target}</td>
-                      <td className="px-4 py-3"><Badge tone={statusTone(task.status) as any}>{task.status}</Badge></td>
+                      <td className="px-4 py-3"><Badge tone={statusTone(task.status)}>{task.status}</Badge></td>
                       <td className="px-4 py-3">{task.summary.records} / {task.summary.files}</td>
                       <td className="px-4 py-3">{task.created_at}</td>
                     </tr>
@@ -431,7 +433,7 @@ function TaskRow({ task }: { task: Task }) {
         <div className="mt-1 text-xs text-[hsl(var(--muted))]">{task.task_type}</div>
       </td>
       <td className="px-4 py-3">
-        <Badge tone={statusTone(task.status) as any}>{task.status}</Badge>
+        <Badge tone={statusTone(task.status)}>{task.status}</Badge>
       </td>
       <td className="px-4 py-3">{task.username || '-'}</td>
       <td className="px-4 py-3">{task.created_at}</td>
@@ -449,11 +451,11 @@ function TaskFormPage() {
   const { data: dashboardData } = useQuery({ queryKey: ['dashboard'], queryFn: () => api.dashboard() });
   const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies() });
   const [searchParams] = useSearchParams();
-  const accounts = accountData?.accounts || [];
+  const accounts = accountData?.accounts;
   const proxies = proxiesData?.proxies || [];
   const [form, setForm] = useState({
     task_type: 'user_media',
-    account_id: accounts[0]?.id ?? '',
+    account_id: 0,
     targets: '',
     time_range: '1990-01-01:2030-01-01',
     max_concurrent_requests: 8,
@@ -487,8 +489,9 @@ function TaskFormPage() {
   });
 
   useEffect(() => {
-    if (!form.account_id && accounts[0]?.id) {
-      setForm((prev) => ({ ...prev, account_id: accounts[0].id }));
+    const firstAccountId = accounts?.[0]?.id;
+    if (!form.account_id && firstAccountId) {
+      setForm((prev) => ({ ...prev, account_id: firstAccountId }));
     }
   }, [accounts, form.account_id]);
 
@@ -511,7 +514,7 @@ function TaskFormPage() {
         description="先选账号和任务类型，再填目标用户或搜索词，最后提交进入队列。"
         steps={['选择可用 X 账号', '填写目标和时间范围', '提交任务后看进度']}
       >
-        <Button onClick={() => create.mutate()} disabled={create.isPending || !accounts.length}>
+        <Button onClick={() => create.mutate()} disabled={create.isPending || !accounts?.length}>
           提交任务
         </Button>
         <Button variant="secondary" onClick={() => (window.location.href = '/tasks')}>
@@ -535,7 +538,7 @@ function TaskFormPage() {
             </Field>
             <Field label="X账号">
               <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.account_id} onChange={(e) => setForm((prev) => ({ ...prev, account_id: Number(e.target.value) }))}>
-                {accounts.map((account: Account) => (
+                {(accounts || []).map((account: Account) => (
                   <option key={account.id} value={account.id}>
                     {account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}
                   </option>
@@ -895,7 +898,7 @@ function AccountsPage() {
                     <td className="px-4 py-3">#{account.id}</td>
                     <td className="px-4 py-3 font-medium">{account.label}</td>
                     <td className="px-4 py-3">{account.screen_name ? `@${account.screen_name}` : '-'}</td>
-                    <td className="px-4 py-3"><Badge tone={statusTone(account.status) as any}>{account.status}</Badge></td>
+                    <td className="px-4 py-3"><Badge tone={statusTone(account.status)}>{account.status}</Badge></td>
                     <td className="px-4 py-3">{account.last_checked_at || '-'}</td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
