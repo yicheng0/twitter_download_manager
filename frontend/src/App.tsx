@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { BarChart3, CircleUserRound, FolderKanban, LogOut, Plus, RefreshCcw, ShieldCheck, SquareTerminal } from 'lucide-react';
+import { BarChart3, CircleUserRound, FolderKanban, LogOut, Plus, RefreshCcw, ShieldCheck, SquareTerminal, Activity, Play, Square } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
@@ -53,6 +53,7 @@ function Shell({ user, children }: { user: User; children: React.ReactNode }) {
             Twitter Download Web
           </div>
           <nav className="ml-4 hidden items-center gap-2 md:flex">
+            <NavItem to="/run" icon={<Activity className="h-4 w-4" />} label="运行控制" />
             <NavItem to="/tasks" icon={<FolderKanban className="h-4 w-4" />} label="任务" />
             <NavItem to="/tasks/new" icon={<Plus className="h-4 w-4" />} label="新建" />
             {user.role === 'admin' && <NavItem to="/accounts" icon={<ShieldCheck className="h-4 w-4" />} label="账号" />}
@@ -134,7 +135,6 @@ function LoginPage() {
 
 function TaskListPage({ user }: { user: User }) {
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   const { data, isLoading } = useQuery({ queryKey: ['tasks'], queryFn: () => api.tasks(), refetchInterval: 5000 });
   const tasks = data?.tasks || [];
   const stats = {
@@ -156,7 +156,7 @@ function TaskListPage({ user }: { user: User }) {
             <RefreshCcw className="mr-2 h-4 w-4" />
             刷新
           </Button>
-          <Button onClick={() => navigate('/tasks/new')}>
+          <Button onClick={() => (window.location.href = '/tasks/new')}>
             <Plus className="mr-2 h-4 w-4" />
             新建任务
           </Button>
@@ -250,7 +250,6 @@ function TaskRow({ task }: { task: Task }) {
 }
 
 function TaskFormPage({ user }: { user: User }) {
-  const navigate = useNavigate();
   const { data: accountData } = useQuery({ queryKey: ['accounts'], queryFn: () => api.accounts() });
   const accounts = accountData?.accounts || [];
   const [form, setForm] = useState({
@@ -283,7 +282,7 @@ function TaskFormPage({ user }: { user: User }) {
   const [error, setError] = useState('');
   const create = useMutation({
     mutationFn: () => api.createTask(form),
-    onSuccess: (res) => navigate(`/tasks/${res.task.id}`),
+    onSuccess: (res) => (window.location.href = `/tasks/${res.task.id}`),
     onError: (err: Error) => setError(err.message),
   });
 
@@ -402,7 +401,7 @@ function TaskFormPage({ user }: { user: User }) {
         <Button onClick={() => create.mutate()} disabled={create.isPending || !accounts.length}>
           提交任务
         </Button>
-        <Button variant="secondary" onClick={() => navigate('/tasks')}>
+        <Button variant="secondary" onClick={() => (window.location.href = '/tasks')}>
           取消
         </Button>
       </div>
@@ -581,6 +580,116 @@ function AccountsPage({ user }: { user: User }) {
   );
 }
 
+function RunControlPage({ user }: { user: User }) {
+  const queryClient = useQueryClient();
+  const { data: configData } = useQuery({ queryKey: ['run-config'], queryFn: () => api.runConfig() });
+  const { data: statusData } = useQuery({ queryKey: ['run-status'], queryFn: () => api.runStatus(), refetchInterval: 2000 });
+  const [form, setForm] = useState({
+    save_path: '',
+    user_lst: '',
+    cookie: '',
+    time_range: '1990-01-01:2030-01-01',
+    has_retweet: false,
+    high_lights: false,
+    likes: false,
+    down_log: false,
+    autoSync: false,
+    image_format: 'orig',
+    has_video: true,
+    log_output: true,
+    max_concurrent_requests: 8,
+    proxy: '',
+    md_output: false,
+    media_count_limit: 350,
+  });
+  useEffect(() => {
+    if (configData) setForm((prev) => ({ ...prev, ...configData }));
+  }, [configData]);
+  const start = useMutation({
+    mutationFn: () => api.runStart(form),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['run-status'] });
+    },
+  });
+  const stop = useMutation({
+    mutationFn: api.runStop,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['run-status'] });
+    },
+  });
+
+  const status = statusData || {
+    status: 'idle',
+    message: '等待启动',
+    logs: [],
+    summary: { elapsed: null, api_calls: 0, downloads: 0 },
+    output_path: '',
+    running_for: null,
+    started_at: null,
+    ended_at: null,
+    return_code: null,
+    log_version: 0,
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h2 className="text-2xl font-semibold">运行控制</h2>
+          <p className="mt-1 text-sm text-[hsl(var(--muted))]">把原来 7860 的独立面板收进这里。</p>
+        </div>
+        <div className="flex gap-2">
+          <Button onClick={() => start.mutate()} disabled={start.isPending}>
+            <Play className="mr-2 h-4 w-4" />
+            启动
+          </Button>
+          <Button variant="danger" onClick={() => stop.mutate()} disabled={stop.isPending}>
+            <Square className="mr-2 h-4 w-4" />
+            停止
+          </Button>
+        </div>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-4">
+        <InfoCard title="状态" value={status.status} />
+        <InfoCard title="API 次数" value={String(status.summary.api_calls)} />
+        <InfoCard title="下载数" value={String(status.summary.downloads)} />
+        <InfoCard title="运行时长" value={status.running_for ? `${status.running_for}s` : '-'} />
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card>
+          <CardHeader><h3 className="font-semibold">配置</h3></CardHeader>
+          <CardContent className="space-y-4">
+            <Field label="保存路径"><Input value={form.save_path} onChange={(e) => setForm((p) => ({ ...p, save_path: e.target.value }))} /></Field>
+            <Field label="用户名列表"><Textarea rows={3} value={form.user_lst} onChange={(e) => setForm((p) => ({ ...p, user_lst: e.target.value }))} /></Field>
+            <Field label="Cookie"><Textarea rows={3} value={form.cookie} onChange={(e) => setForm((p) => ({ ...p, cookie: e.target.value }))} /></Field>
+            <Field label="时间范围"><Input value={form.time_range} onChange={(e) => setForm((p) => ({ ...p, time_range: e.target.value }))} /></Field>
+            <Field label="并发数"><Input type="number" value={form.max_concurrent_requests} onChange={(e) => setForm((p) => ({ ...p, max_concurrent_requests: Number(e.target.value) }))} /></Field>
+            <div className="grid grid-cols-2 gap-3">
+              <Check label="包含转推" checked={form.has_retweet} onCheckedChange={(checked) => setForm((p) => ({ ...p, has_retweet: checked }))} />
+              <Check label="亮点" checked={form.high_lights} onCheckedChange={(checked) => setForm((p) => ({ ...p, high_lights: checked }))} />
+              <Check label="Likes" checked={form.likes} onCheckedChange={(checked) => setForm((p) => ({ ...p, likes: checked }))} />
+              <Check label="去重日志" checked={form.down_log} onCheckedChange={(checked) => setForm((p) => ({ ...p, down_log: checked }))} />
+              <Check label="自动同步" checked={form.autoSync} onCheckedChange={(checked) => setForm((p) => ({ ...p, autoSync: checked }))} />
+              <Check label="视频下载" checked={form.has_video} onCheckedChange={(checked) => setForm((p) => ({ ...p, has_video: checked }))} />
+              <Check label="输出 Markdown" checked={form.md_output} onCheckedChange={(checked) => setForm((p) => ({ ...p, md_output: checked }))} />
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><h3 className="font-semibold">日志</h3></CardHeader>
+          <CardContent>
+            <div className="max-h-[640px] overflow-auto rounded-lg bg-slate-950 p-4 text-xs leading-6 text-slate-100">
+              {status.logs.length ? status.logs.map((line, index) => <div key={index}>{line}</div>) : '还没有日志'}
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const { data, isLoading } = useSession();
   const session = data?.user ? data : null;
@@ -593,6 +702,7 @@ function App() {
     <Shell user={user}>
       <Routes>
         <Route path="/" element={<Navigate to="/tasks" replace />} />
+        <Route path="/run" element={<RunControlPage user={user} />} />
         <Route path="/tasks" element={<TaskListPage user={user} />} />
         <Route path="/tasks/new" element={<TaskFormPage user={user} />} />
         <Route path="/tasks/:id" element={<TaskDetailRoute user={user} />} />
