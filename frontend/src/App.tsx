@@ -8,7 +8,7 @@ import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
-import type { Account, ProxyItem, RunConfig, RunStatus, Task, TaskFormValues, TaskType } from './lib/types';
+import type { Account, BitBrowserImportResult, ProxyItem, RunConfig, RunStatus, Task, TaskFormValues, TaskType } from './lib/types';
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
 
@@ -1133,7 +1133,14 @@ function AccountsPage() {
   const { data } = useQuery({ queryKey: ['accounts'], queryFn: () => api.accounts(), refetchInterval: 8000 });
   const accounts = data?.accounts || [];
   const [form, setForm] = useState({ label: '', auth_token: '', ct0: '' });
+  const [bitBrowserForm, setBitBrowserForm] = useState({ base_url: 'http://127.0.0.1:54345', browser_ids: '' });
+  const [bitBrowserResults, setBitBrowserResults] = useState<BitBrowserImportResult[]>([]);
   const [error, setError] = useState('');
+  const [browserLoginOpen, setBrowserLoginOpen] = useState(false);
+  const [browserLoginStatus, setBrowserLoginStatus] = useState('');
+  const [browserLoginMessage, setBrowserLoginMessage] = useState('');
+  const [browserInput, setBrowserInput] = useState('');
+  const [screenshotVersion, setScreenshotVersion] = useState(0);
   const addAccount = useMutation({
     mutationFn: () => api.addAccount(form),
     onSuccess: () => {
@@ -1143,11 +1150,53 @@ function AccountsPage() {
     },
     onError: (err: Error) => setError(err.message),
   });
+  const importBitBrowserAccounts = useMutation({
+    mutationFn: () => {
+      const browserIds = bitBrowserForm.browser_ids
+        .split(/[\r\n,]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      return api.importBitBrowserAccounts({ base_url: bitBrowserForm.base_url, browser_ids: browserIds });
+    },
+    onSuccess: (res) => {
+      setError('');
+      setBitBrowserResults(res.results);
+      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
   const browserLogin = useMutation({
     mutationFn: api.browserLogin,
+    onSuccess: (res) => {
+      setError('');
+      setBrowserLoginOpen(true);
+      setBrowserLoginStatus(res.status);
+      setBrowserLoginMessage(res.message);
+      setScreenshotVersion((prev) => prev + 1);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const browserLoginStatusQuery = useQuery({
+    queryKey: ['browser-login-status', browserLoginOpen],
+    queryFn: api.browserLoginStatus,
+    enabled: browserLoginOpen,
+    refetchInterval: browserLoginOpen ? 2500 : false,
+  });
+  const sendBrowserInput = useMutation({
+    mutationFn: api.browserLoginInput,
     onSuccess: () => {
       setError('');
-      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+      setScreenshotVersion((prev) => prev + 1);
+      queryClient.invalidateQueries({ queryKey: ['browser-login-status', browserLoginOpen] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const cancelBrowserLogin = useMutation({
+    mutationFn: api.browserLoginCancel,
+    onSuccess: () => {
+      setBrowserLoginOpen(false);
+      setBrowserLoginStatus('');
+      setBrowserLoginMessage('');
     },
     onError: (err: Error) => setError(err.message),
   });
@@ -1168,6 +1217,37 @@ function AccountsPage() {
     onError: (err: Error) => setError(err.message),
   });
 
+  useEffect(() => {
+    const status = browserLoginStatusQuery.data?.status;
+    if (!status) return;
+    setBrowserLoginStatus(status);
+    setBrowserLoginMessage(browserLoginStatusQuery.data?.message || '');
+    if (status === 'completed') {
+      setBrowserLoginOpen(false);
+      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+    }
+    if (status === 'running') {
+      setScreenshotVersion((prev) => prev + 1);
+    }
+  }, [browserLoginStatusQuery.data, queryClient]);
+
+  const clickRemoteBrowser = (event: React.MouseEvent<HTMLImageElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const scaleX = event.currentTarget.naturalWidth / rect.width;
+    const scaleY = event.currentTarget.naturalHeight / rect.height;
+    sendBrowserInput.mutate({
+      action: 'click',
+      x: Math.round((event.clientX - rect.left) * scaleX),
+      y: Math.round((event.clientY - rect.top) * scaleY),
+    });
+  };
+
+  const typeRemoteText = () => {
+    if (!browserInput) return;
+    sendBrowserInput.mutate({ action: 'type', text: browserInput });
+    setBrowserInput('');
+  };
+
   return (
     <div className="space-y-4">
       <div>
@@ -1181,6 +1261,60 @@ function AccountsPage() {
         </Button>
       </ActionBar>
       {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
+      {browserLoginOpen && (
+        <Card>
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h3 className="font-semibold">浏览器登录</h3>
+                <p className="mt-1 text-sm text-[hsl(var(--muted))]">{browserLoginMessage || '请在远程浏览器中完成 X 登录'}</p>
+              </div>
+              <Badge tone={browserLoginStatus === 'running' ? 'primary' : browserLoginStatus === 'completed' ? 'success' : 'warning'}>
+                {browserLoginStatus || 'starting'}
+              </Badge>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="overflow-auto rounded-lg border border-[hsl(var(--line))] bg-[#020617]">
+              <img
+                src={`/api/accounts/browser-login/screenshot?v=${screenshotVersion}`}
+                alt="远程浏览器登录画面"
+                className="mx-auto max-h-[620px] cursor-crosshair"
+                onClick={clickRemoteBrowser}
+              />
+            </div>
+            <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+              <Input
+                value={browserInput}
+                onChange={(event) => setBrowserInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    typeRemoteText();
+                  }
+                }}
+                placeholder="输入后点击发送到远程浏览器"
+              />
+              <Button onClick={typeRemoteText} disabled={sendBrowserInput.isPending || !browserInput}>
+                发送输入
+              </Button>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {['Enter', 'Tab', 'Backspace', 'Escape'].map((key) => (
+                <Button key={key} variant="secondary" size="sm" onClick={() => sendBrowserInput.mutate({ action: 'press', key })}>
+                  {key}
+                </Button>
+              ))}
+              <Button variant="secondary" size="sm" onClick={() => sendBrowserInput.mutate({ action: 'reload' })}>
+                刷新页面
+              </Button>
+              <Button variant="danger" size="sm" onClick={() => cancelBrowserLogin.mutate()}>
+                取消登录
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
       <div className="grid gap-3 md:grid-cols-3">
         <InfoCard title="可用账号" value={String(accounts.filter((account) => account.status === 'active').length)} />
         <InfoCard title="失效账号" value={String(accounts.filter((account) => account.status !== 'active').length)} />
@@ -1206,6 +1340,61 @@ function AccountsPage() {
               保存账号
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div>
+            <h3 className="font-semibold">从比特浏览器导入</h3>
+            <p className="mt-1 text-sm text-[hsl(var(--muted))]">读取已登录环境的 X Cookie，不需要输入账号密码。</p>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-3 md:grid-cols-[1fr_1.4fr]">
+            <Field label="本地 API 地址">
+              <Input
+                value={bitBrowserForm.base_url}
+                onChange={(e) => setBitBrowserForm((prev) => ({ ...prev, base_url: e.target.value }))}
+                placeholder="http://127.0.0.1:54345"
+              />
+            </Field>
+            <Field label="窗口/Profile ID">
+              <Textarea
+                rows={3}
+                value={bitBrowserForm.browser_ids}
+                onChange={(e) => setBitBrowserForm((prev) => ({ ...prev, browser_ids: e.target.value }))}
+                placeholder="每行一个，最多 10 个"
+              />
+            </Field>
+          </div>
+          <div className="flex justify-end">
+            <Button
+              onClick={() => importBitBrowserAccounts.mutate()}
+              disabled={importBitBrowserAccounts.isPending || !bitBrowserForm.browser_ids.trim()}
+            >
+              导入比特浏览器账号
+            </Button>
+          </div>
+          {bitBrowserResults.length > 0 && (
+            <div className="space-y-2">
+              {bitBrowserResults.map((item) => (
+                <div
+                  key={item.browser_id}
+                  className={cn(
+                    'rounded-lg border px-3 py-2 text-sm',
+                    item.status === 'imported'
+                      ? 'border-[rgba(34,197,94,0.32)] bg-[rgba(34,197,94,0.12)] text-[hsl(var(--success))]'
+                      : 'border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] text-[hsl(var(--danger))]',
+                  )}
+                >
+                  <span className="font-semibold">{item.browser_id}</span>
+                  {' · '}
+                  {item.status === 'imported' ? `导入成功${item.screen_name ? `：@${item.screen_name}` : ''}` : item.message}
+                </div>
+              ))}
+            </div>
+          )}
         </CardContent>
       </Card>
 

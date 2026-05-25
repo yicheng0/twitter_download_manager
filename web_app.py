@@ -18,7 +18,7 @@ from threading import Thread
 
 import httpx
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -44,7 +44,7 @@ TASKS_DIR = DATA_DIR / 'tasks'
 DB_PATH = DATA_DIR / 'web.sqlite3'
 DEFAULT_ADMIN_USER = os.environ.get('TW_WEB_ADMIN_USER', 'admin')
 DEFAULT_ADMIN_PASSWORD = os.environ.get('TW_WEB_ADMIN_PASSWORD', 'admin123')
-BROWSER_LOGIN_ENABLED = os.environ.get('TW_WEB_ENABLE_BROWSER_LOGIN', '').lower() in {'1', 'true', 'yes', 'on'} or not PUBLIC_MODE
+BROWSER_LOGIN_DISABLED = os.environ.get('TW_WEB_ENABLE_BROWSER_LOGIN', '').lower() in {'0', 'false', 'no', 'off'}
 INTERNAL_USER = {'id': 1, 'username': DEFAULT_ADMIN_USER, 'role': 'admin'}
 
 app = FastAPI(title='Twitter Download Web')
@@ -68,6 +68,13 @@ stop_worker = False
 health_lock = threading.Lock()
 health_thread = None
 stop_health_worker = False
+BROWSER_LOGIN_TIMEOUT_SECONDS = 300
+browser_login_lock = asyncio.Lock()
+browser_login_session = None
+
+
+def browser_login_available():
+    return not BROWSER_LOGIN_DISABLED
 HEALTH_CHECK_INTERVAL = int(os.environ.get('TW_WEB_HEALTH_INTERVAL', '900') or 900)
 TASK_RETRY_DELAY_SECONDS = int(os.environ.get('TW_WEB_RETRY_DELAY_SECONDS', '30') or 30)
 health_state = {
@@ -777,6 +784,13 @@ def validate_account_cookie(cookie):
 def save_account(label, auth_token, ct0, screen_name=None):
     cookie = f'auth_token={auth_token}; ct0={ct0};'
     with db() as conn:
+        existing = conn.execute('select id from accounts where auth_token = ? and ct0 = ?', (auth_token, ct0)).fetchone()
+        if existing:
+            conn.execute(
+                'update accounts set label = ?, cookie = ?, screen_name = coalesce(?, screen_name), status = ?, last_checked_at = ? where id = ?',
+                (label or screen_name or 'X Account', cookie, screen_name, 'active', now(), existing['id']),
+            )
+            return
         conn.execute(
             '''
             insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at)
@@ -784,6 +798,218 @@ def save_account(label, auth_token, ct0, screen_name=None):
             ''',
             (label or screen_name or 'X Account', auth_token, ct0, cookie, screen_name, now(), now()),
         )
+
+
+def normalize_bitbrowser_base_url(value):
+    base_url = str(value or '').strip().rstrip('/')
+    if not base_url:
+        base_url = 'http://127.0.0.1:54345'
+    if not re.match(r'^https?://(127\.0\.0\.1|localhost)(:\d+)?$', base_url):
+        raise HTTPException(status_code=400, detail='比特浏览器 API 地址只允许本机 localhost/127.0.0.1')
+    return base_url
+
+
+def normalize_browser_ids(value):
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = re.split(r'[\r\n,]+', str(value or ''))
+    browser_ids = []
+    seen = set()
+    for item in raw_items:
+        browser_id = str(item or '').strip()
+        if not browser_id or browser_id in seen:
+            continue
+        browser_ids.append(browser_id)
+        seen.add(browser_id)
+    if not browser_ids:
+        raise HTTPException(status_code=400, detail='请至少填写一个比特浏览器窗口/Profile ID')
+    if len(browser_ids) > 10:
+        raise HTTPException(status_code=400, detail='一次最多导入 10 个比特浏览器窗口/Profile ID')
+    return browser_ids
+
+
+def bitbrowser_post(base_url, path, payload):
+    try:
+        response = httpx.post(f'{base_url}{path}', json=payload, timeout=20)
+    except Exception as exc:
+        raise RuntimeError(f'连接比特浏览器本地 API 失败：{exc}')
+    try:
+        data = response.json()
+    except Exception:
+        data = {'raw': response.text}
+    if response.status_code >= 400:
+        raise RuntimeError(f'HTTP {response.status_code}: {redact_sensitive(str(data))[:240]}')
+    code = data.get('code') if isinstance(data, dict) else None
+    success = data.get('success') if isinstance(data, dict) else None
+    if code not in {None, 0, 200} and success is not True:
+        message = data.get('msg') or data.get('message') or data.get('error') or data
+        raise RuntimeError(redact_sensitive(str(message))[:240])
+    return data
+
+
+def cookie_items_from_payload(payload):
+    candidates = []
+    if isinstance(payload, list):
+        candidates.append(payload)
+    if isinstance(payload, dict):
+        for key in ['data', 'cookies', 'cookie']:
+            if key in payload:
+                candidates.append(payload[key])
+        data = payload.get('data')
+        if isinstance(data, dict):
+            for key in ['cookies', 'cookie', 'list']:
+                if key in data:
+                    candidates.append(data[key])
+    for candidate in candidates:
+        if isinstance(candidate, list):
+            return candidate
+        if isinstance(candidate, str):
+            try:
+                decoded = json.loads(candidate)
+                if isinstance(decoded, list):
+                    return decoded
+            except Exception:
+                continue
+    return []
+
+
+def extract_x_session_from_cookies(cookies):
+    auth_token = ''
+    ct0 = ''
+    for cookie in cookies:
+        if not isinstance(cookie, dict):
+            continue
+        name = str(cookie.get('name') or '').strip()
+        value = str(cookie.get('value') or '').strip()
+        domain = str(cookie.get('domain') or '').lower()
+        if domain and not any(host in domain for host in ['x.com', 'twitter.com']):
+            continue
+        if name == 'auth_token':
+            auth_token = value
+        elif name == 'ct0':
+            ct0 = value
+    return auth_token, ct0
+
+
+def import_bitbrowser_account(base_url, browser_id):
+    result = {'browser_id': browser_id, 'status': 'failed', 'message': ''}
+    try:
+        bitbrowser_post(base_url, '/browser/open', {'id': browser_id})
+        payload = bitbrowser_post(base_url, '/browser/cookies/get', {'browserId': browser_id})
+        cookies = cookie_items_from_payload(payload)
+        auth_token, ct0 = extract_x_session_from_cookies(cookies)
+        if not auth_token or not ct0:
+            result['message'] = '未找到 x.com/twitter.com 的 auth_token 和 ct0，请确认该环境已登录 X'
+            return result
+        cookie = f'auth_token={auth_token}; ct0={ct0};'
+        ok, screen_name, error = validate_account_cookie(cookie)
+        if not ok:
+            result['message'] = f'账号 Cookie 校验失败：{redact_sensitive(error)}'
+            return result
+        save_account(screen_name or f'BitBrowser {browser_id}', auth_token, ct0, screen_name)
+        result.update({'status': 'imported', 'message': '导入成功', 'screen_name': screen_name or ''})
+        return result
+    except Exception as exc:
+        result['message'] = redact_sensitive(str(exc))
+        return result
+
+
+async def close_browser_login_session():
+    global browser_login_session
+    session = browser_login_session
+    browser_login_session = None
+    if not session:
+        return
+    try:
+        await session.get('context').close()
+    except Exception:
+        pass
+    try:
+        await session.get('playwright').stop()
+    except Exception:
+        pass
+
+
+async def browser_login_payload(session):
+    if not session:
+        return {'status': 'idle', 'message': '还没有启动浏览器登录'}
+
+    if time.time() > session['expires_at']:
+        await close_browser_login_session()
+        return {'status': 'expired', 'message': '浏览器登录已超时，请重新开始'}
+
+    if session.get('error'):
+        message = session['error']
+        await close_browser_login_session()
+        return {'status': 'failed', 'message': message}
+
+    context = session['context']
+    try:
+        cookies = await context.cookies('https://x.com')
+        data = {c['name']: c['value'] for c in cookies}
+        auth_token = data.get('auth_token', '')
+        ct0 = data.get('ct0', '')
+        if auth_token and ct0:
+            cookie = f'auth_token={auth_token}; ct0={ct0};'
+            ok, screen_name, error = validate_account_cookie(cookie)
+            if ok:
+                save_account(screen_name or 'Browser Login', auth_token, ct0, screen_name)
+                await close_browser_login_session()
+                return {'status': 'completed', 'message': '登录成功，账号已保存', 'screen_name': screen_name}
+            session['message'] = f'检测到 Cookie，但账号校验失败：{redact_sensitive(error)}'
+    except Exception as exc:
+        session['message'] = f'检查登录状态失败：{redact_sensitive(str(exc))}'
+
+    return {
+        'status': 'running',
+        'message': session.get('message') or '请在远程浏览器中完成 X 登录',
+        'expires_in': max(0, int(session['expires_at'] - time.time())),
+    }
+
+
+async def ensure_browser_login_session():
+    global browser_login_session
+    async with browser_login_lock:
+        if browser_login_session:
+            payload = await browser_login_payload(browser_login_session)
+            if payload['status'] == 'running':
+                return payload
+        try:
+            from playwright.async_api import async_playwright
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f'Playwright 未安装: {exc}')
+
+        playwright = None
+        try:
+            playwright = await async_playwright().start()
+            profile_dir = DATA_DIR / 'playwright-x-profile'
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            context = await playwright.chromium.launch_persistent_context(
+                str(profile_dir),
+                headless=True,
+                viewport={'width': 1280, 'height': 820},
+            )
+            page = context.pages[0] if context.pages else await context.new_page()
+            await page.goto('https://x.com/i/flow/login', wait_until='domcontentloaded')
+            browser_login_session = {
+                'playwright': playwright,
+                'context': context,
+                'page': page,
+                'started_at': time.time(),
+                'expires_at': time.time() + BROWSER_LOGIN_TIMEOUT_SECONDS,
+                'message': '请在远程浏览器中完成 X 登录',
+            }
+            return await browser_login_payload(browser_login_session)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            if playwright:
+                try:
+                    await playwright.stop()
+                except Exception:
+                    pass
+            raise HTTPException(status_code=500, detail=f'启动浏览器失败: {redact_sensitive(str(exc))}')
 
 
 def start_background_worker():
@@ -1381,38 +1607,10 @@ def delete_account(account_id: int, user=Depends(require_admin)):
 
 
 @app.post('/accounts/browser-login')
-def browser_login(user=Depends(require_admin)):
-    if not BROWSER_LOGIN_ENABLED:
-        raise HTTPException(status_code=403, detail='公网部署默认关闭浏览器登录，请手动录入 auth_token 和 ct0。')
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f'Playwright 未安装: {exc}')
-
-    profile_dir = DATA_DIR / 'playwright-x-profile'
-    with sync_playwright() as p:
-        browser = p.chromium.launch_persistent_context(str(profile_dir), headless=False)
-        page = browser.new_page()
-        page.goto('https://x.com/i/flow/login', wait_until='domcontentloaded')
-        deadline = time.time() + 300
-        auth_token = ''
-        ct0 = ''
-        screen_name = None
-        while time.time() < deadline:
-            cookies = browser.cookies('https://x.com')
-            data = {c['name']: c['value'] for c in cookies}
-            auth_token = data.get('auth_token', '')
-            ct0 = data.get('ct0', '')
-            if auth_token and ct0:
-                cookie = f'auth_token={auth_token}; ct0={ct0};'
-                ok, screen_name, _ = validate_account_cookie(cookie)
-                if ok:
-                    break
-            time.sleep(2)
-        browser.close()
-    if not auth_token or not ct0:
-        raise HTTPException(status_code=408, detail='5 分钟内未完成 X 登录')
-    save_account(screen_name or 'Browser Login', auth_token, ct0, screen_name)
+async def browser_login(user=Depends(require_admin)):
+    if not browser_login_available():
+        raise HTTPException(status_code=403, detail='浏览器登录已被 TW_WEB_ENABLE_BROWSER_LOGIN=0 禁用。')
+    await ensure_browser_login_session()
     return RedirectResponse('/accounts', status_code=303)
 
 
@@ -1715,11 +1913,87 @@ async def api_add_account_manual(request: Request, user=Depends(require_api_admi
 
 
 @app.post('/api/accounts/browser-login')
-def api_browser_login(user=Depends(require_api_admin)):
-    if not BROWSER_LOGIN_ENABLED:
-        raise HTTPException(status_code=403, detail='公网部署默认关闭浏览器登录，请手动录入 auth_token 和 ct0。')
-    browser_login(user)
+async def api_browser_login(user=Depends(require_api_admin)):
+    if not browser_login_available():
+        raise HTTPException(status_code=403, detail='浏览器登录已被 TW_WEB_ENABLE_BROWSER_LOGIN=0 禁用。')
+    return await ensure_browser_login_session()
+
+
+@app.post('/api/accounts/browser-login/start')
+async def api_browser_login_start(user=Depends(require_api_admin)):
+    if not browser_login_available():
+        raise HTTPException(status_code=403, detail='浏览器登录已被 TW_WEB_ENABLE_BROWSER_LOGIN=0 禁用。')
+    return await ensure_browser_login_session()
+
+
+@app.get('/api/accounts/browser-login/status')
+async def api_browser_login_status(user=Depends(require_api_admin)):
+    async with browser_login_lock:
+        return await browser_login_payload(browser_login_session)
+
+
+@app.get('/api/accounts/browser-login/screenshot')
+async def api_browser_login_screenshot(user=Depends(require_api_admin)):
+    async with browser_login_lock:
+        payload = await browser_login_payload(browser_login_session)
+        if payload['status'] != 'running':
+            raise HTTPException(status_code=409, detail=payload['message'])
+        try:
+            data = await browser_login_session['page'].screenshot(type='jpeg', quality=72)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f'获取远程浏览器画面失败: {redact_sensitive(str(exc))}')
+    return Response(content=data, media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
+
+
+@app.post('/api/accounts/browser-login/input')
+async def api_browser_login_input(request: Request, user=Depends(require_api_admin)):
+    data = await request.json()
+    async with browser_login_lock:
+        payload = await browser_login_payload(browser_login_session)
+        if payload['status'] != 'running':
+            raise HTTPException(status_code=409, detail=payload['message'])
+        page = browser_login_session['page']
+        action = data.get('action')
+        try:
+            if action == 'click':
+                await page.mouse.click(float(data.get('x') or 0), float(data.get('y') or 0))
+            elif action == 'type':
+                await page.keyboard.type(str(data.get('text') or ''), delay=25)
+            elif action == 'press':
+                key = str(data.get('key') or '')
+                if key not in {'Enter', 'Tab', 'Backspace', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'}:
+                    raise HTTPException(status_code=400, detail='不支持的按键')
+                await page.keyboard.press(key)
+            elif action == 'reload':
+                await page.reload(wait_until='domcontentloaded')
+            else:
+                raise HTTPException(status_code=400, detail='不支持的浏览器操作')
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f'远程浏览器操作失败: {redact_sensitive(str(exc))}')
     return {'ok': True}
+
+
+@app.post('/api/accounts/browser-login/cancel')
+async def api_browser_login_cancel(user=Depends(require_api_admin)):
+    async with browser_login_lock:
+        await close_browser_login_session()
+    return {'ok': True}
+
+
+@app.post('/api/accounts/import/bitbrowser')
+async def api_import_bitbrowser_accounts(request: Request, user=Depends(require_api_admin)):
+    data = await request.json()
+    base_url = normalize_bitbrowser_base_url(data.get('base_url'))
+    browser_ids = normalize_browser_ids(data.get('browser_ids'))
+    results = [import_bitbrowser_account(base_url, browser_id) for browser_id in browser_ids]
+    imported = sum(1 for item in results if item.get('status') == 'imported')
+    return {
+        'imported': imported,
+        'failed': len(results) - imported,
+        'results': results,
+    }
 
 
 @app.post('/api/accounts/{account_id}/check')

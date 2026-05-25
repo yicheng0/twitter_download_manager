@@ -48,7 +48,7 @@ docker compose --env-file .env.production up -d --build app
 - 应用容器内部监听 `8000`，默认通过宿主机 `18081` 对外访问，可用 `APP_HOST_PORT` 改成其它空闲端口。
 - 如需使用 Caddy 接管 HTTPS 和域名反代，先确认宿主机 `80/443` 没有被其它项目占用，再运行 `docker compose --profile caddy --env-file .env.production up -d --build`。
 - 数据持久化在 `./data`，包括 SQLite、任务文件和下载结果。
-- 公网模式下默认关闭浏览器登录，建议手动录入 `auth_token` 和 `ct0`。
+- 公网模式下管理员可以使用浏览器登录；如需完全关闭该能力，可设置 `TW_WEB_ENABLE_BROWSER_LOGIN=0`，再手动录入 `auth_token` 和 `ct0`。
 
 ## 推荐启动方式
 
