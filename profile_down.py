@@ -2,6 +2,7 @@ import os
 import httpx
 import re
 import json
+from proxy_utils import proxy_for_httpx
 from url_utils import quote_url
 
 
@@ -12,6 +13,9 @@ cookie = 'auth_token=xxxxxxxxxxx; ct0=xxxxxxxxxxx;'
 
 user_lst = ['jeleechandayo','matchach','lilmonix3']
 # 填入要下载的用户名(@后面的字符),支持多用户下载,在列表里添加即可
+
+proxy = ''
+# 可选代理，支持 http://host:port、socks5://user:pass@host:port 或 host:port:user:pass
 
 ##########配置区域##########
 
@@ -30,7 +34,7 @@ _headers['x-csrf-token'] = re.findall(re_token,_headers['cookie'])[0]
 def profile_down(screen_name, path):
 
     url = 'https://twitter.com/i/api/graphql/gEyDv8Fmv2BVTYIAf32nbA/UserByScreenName?variables={"screen_name":"' + screen_name + '","withGrokTranslatedBio":false}&features={"hidden_profile_subscriptions_enabled":true,"payments_enabled":false,"rweb_xchat_enabled":false,"profile_label_improvements_pcf_label_in_post_enabled":true,"rweb_tipjar_consumption_enabled":true,"verified_phone_label_enabled":false,"subscriptions_verification_info_is_identity_verified_enabled":true,"subscriptions_verification_info_verified_since_enabled":true,"highlights_tweets_tab_ui_enabled":true,"responsive_web_twitter_article_notes_tab_enabled":true,"subscriptions_feature_can_gift_premium":true,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true}&fieldToggles={"withAuxiliaryUserLabels":true}'
-    response = httpx.get(quote_url(url), headers=_headers).text 
+    response = httpx.get(quote_url(url), headers=_headers, proxy=proxy_for_httpx(proxy)).text
     raw_data = json.loads(response)
     try:
         avatar_url = raw_data['data']['user']['result']['avatar']['image_url']
@@ -42,8 +46,8 @@ def profile_down(screen_name, path):
 
         avatar_url = re.sub(r'_normal(\.\w+)$', r'_400x400\1', avatar_url) 
 
-        avatar_response = httpx.get(avatar_url, headers=_headers)
-        profile_banner_response = httpx.get(profile_banner_url, headers=_headers) if profile_banner_url else None
+        avatar_response = httpx.get(avatar_url, headers=_headers, proxy=proxy_for_httpx(proxy))
+        profile_banner_response = httpx.get(profile_banner_url, headers=_headers, proxy=proxy_for_httpx(proxy)) if profile_banner_url else None
 
         with open(_path + os.sep + screen_name + '_avatar.jpg', 'wb') as f:
             f.write(avatar_response.content)

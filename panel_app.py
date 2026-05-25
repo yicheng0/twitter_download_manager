@@ -8,6 +8,7 @@ import sys
 import time
 import webbrowser
 from collections import deque
+from datetime import datetime, timedelta
 from pathlib import Path
 from threading import Lock, Thread
 from typing import Any
@@ -18,6 +19,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from proxy_utils import normalize_proxy_url
+
 
 BASE_DIR = Path(__file__).resolve().parent
 PANEL_DIR = BASE_DIR / "panel"
@@ -26,11 +29,17 @@ ACTIVE_SETTINGS = RUNTIME_DIR / "settings.active.json"
 DEFAULT_SETTINGS = BASE_DIR / "settings.json"
 
 
+def default_time_range(days: int = 365) -> str:
+    end = datetime.now()
+    start = end - timedelta(days=days - 1)
+    return f"{start.strftime('%Y-%m-%d')}:{end.strftime('%Y-%m-%d')}"
+
+
 class RunConfig(BaseModel):
     save_path: str = ""
     user_lst: str = Field(..., min_length=1)
     cookie: str = Field(..., min_length=1)
-    time_range: str = "1990-01-01:2030-01-01"
+    time_range: str = Field(default_factory=default_time_range)
     has_retweet: bool = False
     high_lights: bool = False
     likes: bool = False
@@ -136,9 +145,20 @@ def validate_config(config: RunConfig) -> None:
         raise HTTPException(status_code=400, detail="image_format 只能是 orig、jpg 或 png。")
     if not re.match(r"^\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}$", config.time_range):
         raise HTTPException(status_code=400, detail="时间范围格式应为 YYYY-MM-DD:YYYY-MM-DD。")
+    start, end = config.time_range.split(":", 1)
+    today = datetime.now().strftime("%Y-%m-%d")
+    if end < start:
+        raise HTTPException(status_code=400, detail="结束日期不能早于开始日期。")
+    if end > today:
+        raise HTTPException(status_code=400, detail="结束日期不能晚于今天。")
     users = [user.strip().lstrip("@") for user in config.user_lst.split(",") if user.strip()]
     if not users:
         raise HTTPException(status_code=400, detail="至少填写一个用户名。")
+    if config.proxy:
+        try:
+            normalize_proxy_url(config.proxy)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
 
 def build_runtime_settings(config: RunConfig) -> dict[str, Any]:
@@ -149,6 +169,8 @@ def build_runtime_settings(config: RunConfig) -> dict[str, Any]:
         user.strip().lstrip("@") for user in incoming["user_lst"].split(",") if user.strip()
     )
     data.update(incoming)
+    if data.get("proxy"):
+        data["proxy"] = normalize_proxy_url(data["proxy"])
     data["log_output"] = True
     return data
 
@@ -191,7 +213,7 @@ def get_config() -> dict[str, Any]:
         "save_path": settings.get("save_path", ""),
         "user_lst": settings.get("user_lst", ""),
         "cookie": "",
-        "time_range": settings.get("time_range", "1990-01-01:2030-01-01"),
+        "time_range": settings.get("time_range") or default_time_range(),
         "has_retweet": bool(settings.get("has_retweet", False)),
         "high_lights": bool(settings.get("high_lights", False)),
         "likes": bool(settings.get("likes", False)),

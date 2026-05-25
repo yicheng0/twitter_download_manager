@@ -25,6 +25,20 @@ const fields = [
 
 let logsClearedAt = 0;
 
+function formatDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function defaultDateRange() {
+  const today = new Date();
+  const start = new Date(today);
+  start.setDate(today.getDate() - 364);
+  return `${formatDate(start)}:${formatDate(today)}`;
+}
+
 function showToast(message) {
   toast.textContent = message;
   toast.classList.add("show");
@@ -33,9 +47,13 @@ function showToast(message) {
 }
 
 function setDateRange(value) {
-  const [start, end] = (value || "1990-01-01:2030-01-01").split(":");
-  document.querySelector("#start_date").value = start || "1990-01-01";
-  document.querySelector("#end_date").value = end || "2030-01-01";
+  const fallback = defaultDateRange();
+  const [fallbackStart, fallbackEnd] = fallback.split(":");
+  const [start, end] = (value || fallback).split(":");
+  document.querySelector("#start_date").max = fallbackEnd;
+  document.querySelector("#end_date").max = fallbackEnd;
+  document.querySelector("#start_date").value = start || fallbackStart;
+  document.querySelector("#end_date").value = end || fallbackEnd;
 }
 
 function fillConfig(config) {

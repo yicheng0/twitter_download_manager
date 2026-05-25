@@ -12,6 +12,7 @@ from user_info import User_info
 from csv_gen import csv_gen
 from md_gen import md_gen
 from cache_gen import cache_gen
+from proxy_utils import proxy_for_httpx
 from url_utils import quote_url
 
 def del_special_char(string):
@@ -95,7 +96,7 @@ with open(settings_file, 'r', encoding='utf8') as f:
         max_concurrent_requests = 8
 ###### proxy ######
     if settings['proxy']:
-        proxies = settings['proxy']
+        proxies = proxy_for_httpx(settings['proxy'])
     else:
         proxies = None
 

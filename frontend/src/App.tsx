@@ -11,24 +11,15 @@ import { Textarea } from './components/ui/textarea';
 import type { Account, BitBrowserImportResult, ProxyItem, RunConfig, RunStatus, Task, TaskFormValues, TaskType } from './lib/types';
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
+import { defaultRunTimeRange, defaultTaskTimeRange, presetFromTimeRange, rangeFromPreset, splitTimeRange, timeRangeError, TIME_PRESETS, todayString, type TimePreset } from './lib/timeRange';
 
 type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'primary';
-type TimePreset = '7d' | '30d' | '90d' | 'year' | 'all' | 'custom';
-
-const ALL_TIME_RANGE = '1990-01-01:2030-01-01';
-const TIME_PRESETS: Array<{ key: TimePreset; label: string }> = [
-  { key: '7d', label: '最近7天' },
-  { key: '30d', label: '最近30天' },
-  { key: '90d', label: '最近90天' },
-  { key: 'year', label: '今年' },
-  { key: 'all', label: '全部' },
-];
 
 const DEFAULT_TASK_FORM: TaskFormValues = {
   task_type: 'user_media',
   account_id: 0,
   targets: '',
-  time_range: rangeFromPreset('90d'),
+  time_range: defaultTaskTimeRange(),
   max_concurrent_requests: 8,
   has_retweet: false,
   high_lights: false,
@@ -57,7 +48,7 @@ const DEFAULT_RUN_FORM: RunConfig = {
   save_path: '',
   user_lst: '',
   cookie: '',
-  time_range: ALL_TIME_RANGE,
+  time_range: defaultRunTimeRange(),
   has_retweet: false,
   high_lights: false,
   likes: false,
@@ -71,6 +62,8 @@ const DEFAULT_RUN_FORM: RunConfig = {
   md_output: false,
   media_count_limit: 350,
 };
+
+const PROXY_PLACEHOLDER = 'gate.kookeey.info:1000:user:pass 或 socks5://user:pass@host:port';
 
 function statusTone(status: string): BadgeTone {
   if (status === 'completed' || status === 'active' || status === 'finished') return 'success';
@@ -128,44 +121,6 @@ function statusDescription(status: string) {
 
 function displayStatus(status: string) {
   return `${statusLabel(status)}${statusDescription(status) ? ` · ${statusDescription(status)}` : ''}`;
-}
-
-function formatDate(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function rangeFromPreset(preset: TimePreset) {
-  const today = new Date();
-  const end = formatDate(today);
-  if (preset === 'all') return ALL_TIME_RANGE;
-  if (preset === 'year') return `${today.getFullYear()}-01-01:${end}`;
-  const days = preset === '7d' ? 7 : preset === '30d' ? 30 : 90;
-  const start = new Date(today);
-  start.setDate(today.getDate() - days + 1);
-  return `${formatDate(start)}:${end}`;
-}
-
-function splitTimeRange(timeRange: string) {
-  const [start = '', end = ''] = String(timeRange || '').split(':');
-  return { start, end };
-}
-
-function timeRangeError(timeRange: string) {
-  const { start, end } = splitTimeRange(timeRange);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
-    return '请选择完整的开始日期和结束日期。';
-  }
-  if (end < start) {
-    return '结束日期不能早于开始日期。';
-  }
-  return '';
-}
-
-function presetFromTimeRange(timeRange: string): TimePreset {
-  return TIME_PRESETS.find((item) => rangeFromPreset(item.key) === timeRange)?.key || 'custom';
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
@@ -616,7 +571,8 @@ function maskSensitive(text: string) {
     .replace(/("cookie"\s*:\s*")[^"]+/gi, '$1[已隐藏]')
     .replace(/("auth_token"\s*:\s*")[^"]+/gi, '$1[已隐藏]')
     .replace(/("ct0"\s*:\s*")[^"]+/gi, '$1[已隐藏]')
-    .replace(/((?:https?|socks5?|socks4):\/\/)([^:@/\s]+):([^@/\s]+)@/gi, '$1[账号]:[密码]@');
+    .replace(/((?:https?|socks5?|socks4):\/\/)([^:@/\s]+):([^@/\s]+)@/gi, '$1[账号]:[密码]@')
+    .replace(/(^|[\s"'])([A-Za-z0-9.-]+\.[A-Za-z]{2,}|localhost|127\.0\.0\.1):(\d+):([^:\s"']+):([^:\s"']+)/gi, '$1$2:$3:[账号]:[密码]');
 }
 
 async function copyText(text: string) {
@@ -876,7 +832,7 @@ function TaskFormPage() {
               </select>
             </Field>
             <Field label="手填代理">
-              <Input value={form.proxy} onChange={(e) => setForm((prev) => ({ ...prev, proxy: e.target.value }))} placeholder="http://127.0.0.1:7890" />
+              <Input value={form.proxy} onChange={(e) => setForm((prev) => ({ ...prev, proxy: e.target.value }))} placeholder={PROXY_PLACEHOLDER} />
             </Field>
           </CardContent>
         </Card>
@@ -961,9 +917,10 @@ function TimeRangePicker({
           <Button
             key={item.key}
             type="button"
-            variant={preset === item.key ? 'default' : 'secondary'}
+            variant={preset === item.key ? 'default' : item.key === 'all' ? 'ghost' : 'secondary'}
             size="sm"
             onClick={() => onPresetChange(item.key)}
+            title={item.key === 'all' ? '最近一年至今天，适合较大范围采集' : undefined}
           >
             {item.label}
           </Button>
@@ -971,14 +928,14 @@ function TimeRangePicker({
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label="开始日期">
-          <Input type="date" value={start} onChange={(event) => onCustomChange(event.target.value, end)} />
+          <Input type="date" value={start} max={todayString()} onChange={(event) => onCustomChange(event.target.value, end)} />
         </Field>
         <Field label="结束日期">
-          <Input type="date" value={end} onChange={(event) => onCustomChange(start, event.target.value)} />
+          <Input type="date" value={end} max={todayString()} onChange={(event) => onCustomChange(start, event.target.value)} />
         </Field>
       </div>
       <div className={cn('rounded-lg border px-3 py-2 text-sm', error ? 'border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] text-[hsl(var(--danger))]' : 'border-[hsl(var(--line))] bg-[hsl(var(--panel))] text-[hsl(var(--muted))]')}>
-        {error || `实际范围：${value}`}
+        {error || `实际范围：${value}${preset === 'all' ? '（最近一年）' : ''}`}
       </div>
     </div>
   );
@@ -1518,7 +1475,7 @@ function ProxyPage() {
             <Input value={form.label} onChange={(e) => setForm((prev) => ({ ...prev, label: e.target.value }))} />
           </Field>
           <Field label="代理地址">
-            <Input value={form.proxy} onChange={(e) => setForm((prev) => ({ ...prev, proxy: e.target.value }))} placeholder="http://127.0.0.1:7890" />
+            <Input value={form.proxy} onChange={(e) => setForm((prev) => ({ ...prev, proxy: e.target.value }))} placeholder={PROXY_PLACEHOLDER} />
           </Field>
           <div className="flex items-end">
             <Button onClick={() => addProxy.mutate()} disabled={addProxy.isPending || !form.proxy}>

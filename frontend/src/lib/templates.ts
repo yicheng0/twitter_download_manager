@@ -1,4 +1,5 @@
 import type { Dashboard, RunConfig, TaskFormValues, TaskType } from './types';
+import { defaultRunTimeRange, defaultTaskTimeRange, rangeFromPreset } from './timeRange';
 
 export type TaskTemplate = {
   id: string;
@@ -14,7 +15,7 @@ const baseForm = {
   task_type: 'user_media' as TaskType,
   account_id: 0,
   targets: '',
-  time_range: '1990-01-01:2030-01-01',
+  time_range: defaultTaskTimeRange(),
   max_concurrent_requests: 8,
   has_retweet: false,
   high_lights: false,
@@ -57,11 +58,11 @@ export const taskTemplates: TaskTemplate[] = [
       md_output: true,
       down_log: true,
       max_concurrent_requests: 8,
-      time_range: '1990-01-01:2030-01-01',
+      time_range: defaultTaskTimeRange(),
     }),
     runPayload: {
       user_lst: 'elonmusk',
-      time_range: '1990-01-01:2030-01-01',
+      time_range: defaultRunTimeRange(),
       has_retweet: false,
       down_log: true,
       autoSync: false,
@@ -88,7 +89,7 @@ export const taskTemplates: TaskTemplate[] = [
     }),
     runPayload: {
       user_lst: '',
-      time_range: '1990-01-01:2030-01-01',
+      time_range: rangeFromPreset('30d'),
       has_retweet: false,
       down_log: false,
       autoSync: false,
@@ -115,7 +116,7 @@ export const taskTemplates: TaskTemplate[] = [
     }),
     runPayload: {
       user_lst: '',
-      time_range: '1990-01-01:2030-01-01',
+      time_range: defaultTaskTimeRange(),
       has_retweet: false,
       down_log: false,
       autoSync: false,
@@ -139,7 +140,7 @@ export const taskTemplates: TaskTemplate[] = [
     }),
     runPayload: {
       user_lst: 'x',
-      time_range: '1990-01-01:2030-01-01',
+      time_range: defaultRunTimeRange(),
       has_retweet: false,
       down_log: false,
       autoSync: false,

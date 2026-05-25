@@ -9,6 +9,7 @@ import json
 import hashlib
 from datetime import datetime
 from urllib.parse import quote
+from proxy_utils import proxy_for_httpx
 from url_utils import quote_url
 from transaction_generate import get_url_path
 from transaction_generate import get_transaction_id
@@ -40,6 +41,9 @@ media_latest = False
 text_down = False
 # 开启后变为文本下载模式，会消耗大量API次数
 # 开启文本下载时 不要包含 filter:links
+
+proxy = ''
+# 可选代理，支持 http://host:port、socks5://user:pass@host:port 或 host:port:user:pass
 
 ##########配置区域##########
 
@@ -100,7 +104,7 @@ def download_control(media_lst, _csv):
             while True:
                 try:
                     async with semaphore:
-                        async with httpx.AsyncClient() as client:
+                        async with httpx.AsyncClient(proxy=proxy_for_httpx(proxy)) as client:
                             response = await client.get(quote_url(url), timeout=(3.05, 16))        #如果出现第五次或以上的下载失败,且确认不是网络问题,可以适当降低最大并发数量
                     with open(_csv_info[6],'wb') as f:  #_csv_info[6] : Saved Path
                         f.write(response.content)
@@ -191,7 +195,7 @@ class tag_down():
         #接收某页链接，返回该页所有图片地址
         media_lst = []
 
-        response = httpx.get(url, headers=self._headers).text
+        response = httpx.get(url, headers=self._headers, proxy=proxy_for_httpx(proxy)).text
         try:
             raw_data = json.loads(response)
         except Exception:
@@ -264,7 +268,7 @@ class tag_down():
     def search_media_latest(self, url):
         media_lst = []
 
-        response = httpx.get(url, headers=self._headers).text
+        response = httpx.get(url, headers=self._headers, proxy=proxy_for_httpx(proxy)).text
         raw_data = json.loads(response)
         if not self.cursor: #第一次
             raw_data = raw_data['data']['search_by_raw_query']['search_timeline']['timeline']['instructions'][-1]['entries']
@@ -334,7 +338,7 @@ class tag_down():
     def search_save_text(self, url):
         #接收某页链接，保存所有文本内容
 
-        response = httpx.get(url, headers=self._headers).text
+        response = httpx.get(url, headers=self._headers, proxy=proxy_for_httpx(proxy)).text
         raw_data = json.loads(response)
         if not self.cursor: #第一次
             raw_data = raw_data['data']['search_by_raw_query']['search_timeline']['timeline']['instructions'][-1]['entries']

@@ -3,7 +3,9 @@ import json
 import os
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+
+from proxy_utils import proxy_for_httpx
 
 
 def clean_list(value):
@@ -15,6 +17,12 @@ def clean_list(value):
 def ensure_task_dir(path):
     os.makedirs(path, exist_ok=True)
     return os.path.abspath(path)
+
+
+def default_time_range(days=365):
+    end = datetime.now()
+    start = end - timedelta(days=days - 1)
+    return f'{start.strftime("%Y-%m-%d")}:{end.strftime("%Y-%m-%d")}'
 
 
 def cookie_from_account(account):
@@ -32,11 +40,12 @@ def run_user_media(config, cookie, output_dir):
     import main as media_main
     from user_info import User_info
 
+    proxy = proxy_for_httpx(config.get('proxy'))
     users = clean_list(config.get('targets'))
     if not users:
         raise RuntimeError('At least one user name is required.')
 
-    time_range = config.get('time_range') or '1990-01-01:2030-01-01'
+    time_range = config.get('time_range') or default_time_range()
     start_time, end_time = time_range.split(':')
 
     media_main.settings['save_path'] = output_dir + os.sep
@@ -52,7 +61,7 @@ def run_user_media(config, cookie, output_dir):
     media_main.settings['has_video'] = bool(config.get('has_video', True))
     media_main.settings['log_output'] = True
     media_main.settings['max_concurrent_requests'] = int(config.get('max_concurrent_requests') or 8)
-    media_main.settings['proxy'] = config.get('proxy') or ''
+    media_main.settings['proxy'] = proxy or ''
     media_main.settings['md_output'] = bool(config.get('md_output'))
     media_main.settings['media_count_limit'] = int(config.get('media_count_limit') or 350)
 
@@ -70,7 +79,7 @@ def run_user_media(config, cookie, output_dir):
     media_main.down_log = bool(config.get('down_log'))
     media_main.autoSync = bool(config.get('auto_sync'))
     media_main.max_concurrent_requests = int(config.get('max_concurrent_requests') or 8)
-    media_main.proxies = config.get('proxy') or None
+    media_main.proxies = proxy
     media_main.md_output = bool(config.get('md_output'))
     media_main.media_count_limit = int(config.get('media_count_limit') or 350)
     media_main.orig_format = (config.get('image_format') or 'orig') == 'orig'
@@ -93,6 +102,7 @@ def run_user_media(config, cookie, output_dir):
 def run_search(config, cookie, output_dir):
     import tag_down
 
+    tag_down.proxy = proxy_for_httpx(config.get('proxy'))
     tag_down.cookie = cookie
     tag_down.tag = config.get('tag') or ''
     tag_down._filter = ' ' + (config.get('advanced_filter') or '')
@@ -123,13 +133,14 @@ def run_search(config, cookie, output_dir):
 def run_text(config, cookie, output_dir):
     import text_down
 
+    text_down.proxy = proxy_for_httpx(config.get('proxy'))
     users = clean_list(config.get('targets'))
     if not users:
         raise RuntimeError('At least one user name is required.')
 
     text_down.cookie = cookie
     text_down.user_lst = users
-    text_down.time_range = config.get('time_range') or '1990-01-01:2030-01-01'
+    text_down.time_range = config.get('time_range') or default_time_range()
     text_down.has_retweet = bool(config.get('has_retweet'))
     start_time, end_time = text_down.time_range.split(':')
     text_down.start_time_stamp = text_down.time2stamp(start_time)
@@ -145,6 +156,7 @@ def run_text(config, cookie, output_dir):
 def run_replies(config, cookie, output_dir):
     import reply_down
 
+    reply_down.proxy = proxy_for_httpx(config.get('proxy'))
     targets = config.get('targets')
     if isinstance(targets, str):
         targets = [item.strip() for item in targets.splitlines() if item.strip()]
@@ -173,6 +185,7 @@ def run_profile(config, cookie, output_dir):
     import re
     import profile_down
 
+    profile_down.proxy = proxy_for_httpx(config.get('proxy'))
     users = clean_list(config.get('targets'))
     if not users:
         raise RuntimeError('At least one user name is required.')

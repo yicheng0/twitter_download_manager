@@ -23,6 +23,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
+from proxy_utils import normalize_proxy_url, redact_proxy_url as redact_proxy_value
+
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -75,6 +77,34 @@ browser_login_session = None
 
 def browser_login_available():
     return not BROWSER_LOGIN_DISABLED
+
+
+def browser_login_preferred_mode():
+    mode = os.environ.get('TW_WEB_BROWSER_LOGIN_MODE', 'auto').strip().lower()
+    if mode in {'local', 'remote'}:
+        return mode
+    if os.name == 'nt' and not PUBLIC_MODE:
+        return 'local'
+    return 'remote'
+
+
+def local_chrome_executable():
+    explicit = os.environ.get('TW_WEB_CHROME_PATH', '').strip()
+    candidates = [explicit] if explicit else []
+    if os.name == 'nt':
+        candidates.extend(
+            [
+                os.path.join(os.environ.get('PROGRAMFILES', ''), 'Google', 'Chrome', 'Application', 'chrome.exe'),
+                os.path.join(os.environ.get('PROGRAMFILES(X86)', ''), 'Google', 'Chrome', 'Application', 'chrome.exe'),
+                os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Google', 'Chrome', 'Application', 'chrome.exe'),
+                os.path.join(os.environ.get('PROGRAMFILES', ''), 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+                os.path.join(os.environ.get('PROGRAMFILES(X86)', ''), 'Microsoft', 'Edge', 'Application', 'msedge.exe'),
+            ]
+        )
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    return None
 HEALTH_CHECK_INTERVAL = int(os.environ.get('TW_WEB_HEALTH_INTERVAL', '900') or 900)
 TASK_RETRY_DELAY_SECONDS = int(os.environ.get('TW_WEB_RETRY_DELAY_SECONDS', '30') or 30)
 health_state = {
@@ -108,6 +138,16 @@ def db():
 
 def now():
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+def default_time_range(days=365):
+    end = datetime.now()
+    start = end - timedelta(days=days - 1)
+    return f'{start.strftime("%Y-%m-%d")}:{end.strftime("%Y-%m-%d")}'
+
+
+def task_default_time_range():
+    return default_time_range(90)
 
 
 def password_hash(password, salt=None):
@@ -322,14 +362,13 @@ def redact_sensitive(value):
     text = re.sub(r'("auth_token"\s*:\s*")[^"]+', r'\1[已隐藏]', text)
     text = re.sub(r'("ct0"\s*:\s*")[^"]+', r'\1[已隐藏]', text)
     text = re.sub(r'("cookie"\s*:\s*")[^"]+', r'\1[已隐藏]', text)
-    text = re.sub(r'((?:https?|socks5?|socks4)://)([^:@/\s]+):([^@/\s]+)@', r'\1[账号]:[密码]@', text, flags=re.IGNORECASE)
-    return text
+    return redact_proxy_value(text)
 
 
 def redact_proxy_url(proxy_url):
     if not proxy_url:
         return ''
-    return redact_sensitive(proxy_url)
+    return redact_proxy_value(proxy_url)
 
 
 def public_config(config):
@@ -579,6 +618,7 @@ def active_proxies():
 
 def validate_proxy(proxy_url):
     try:
+        proxy_url = normalize_proxy_url(proxy_url)
         r = httpx.get('https://api.ipify.org?format=json', proxy=proxy_url, timeout=15)
         if r.status_code == 200:
             data = r.json()
@@ -651,6 +691,11 @@ def build_runtime_settings(config: dict):
     if 'user_lst' in incoming and isinstance(incoming['user_lst'], str):
         incoming['user_lst'] = ','.join(user.strip().lstrip('@') for user in incoming['user_lst'].split(',') if user.strip())
     data.update(incoming)
+    if data.get('proxy'):
+        try:
+            data['proxy'] = normalize_proxy_url(data.get('proxy'))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     data['log_output'] = True
     return data
 
@@ -1316,7 +1361,7 @@ def new_task_page(request: Request, user=Depends(require_user)):
     if index:
         return index
     accounts = active_accounts()
-    return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': None})
+    return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': None, 'default_time_range': task_default_time_range()})
 
 
 def build_task_config(form):
@@ -1324,7 +1369,7 @@ def build_task_config(form):
     config = {
         'task_type': task_type,
         'targets': form.get('targets') or '',
-        'time_range': form.get('time_range') or '',
+        'time_range': form.get('time_range') or task_default_time_range(),
         'max_concurrent_requests': int(form.get('max_concurrent_requests') or 8),
     }
     for name in ['has_retweet', 'high_lights', 'likes', 'has_video', 'down_log', 'auto_sync', 'md_output', 'media_latest', 'text_down', 'media_down']:
@@ -1348,12 +1393,17 @@ def build_task_config(form):
 
 def apply_proxy_selection(config, proxy_id):
     selected_proxy_id = int(proxy_id or 0)
-    if not selected_proxy_id:
+    try:
+        if not selected_proxy_id:
+            if config.get('proxy'):
+                config['proxy'] = normalize_proxy_url(config.get('proxy'))
+            return config
+        proxy = get_active_proxy_or_error(selected_proxy_id)
+        config['proxy'] = normalize_proxy_url(proxy['proxy'])
+        config['proxy_id'] = selected_proxy_id
         return config
-    proxy = get_active_proxy_or_error(selected_proxy_id)
-    config['proxy'] = proxy['proxy']
-    config['proxy_id'] = selected_proxy_id
-    return config
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 def validate_task_config(config):
@@ -1368,6 +1418,13 @@ def validate_task_config(config):
         raise HTTPException(status_code=400, detail='请填写 Tag 或高级搜索条件')
     if config.get('time_range') and not re.match(r'^\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}$', str(config.get('time_range'))):
         raise HTTPException(status_code=400, detail='时间范围格式应为 YYYY-MM-DD:YYYY-MM-DD')
+    if config.get('time_range'):
+        start, end = str(config.get('time_range')).split(':', 1)
+        today = datetime.now().strftime('%Y-%m-%d')
+        if end < start:
+            raise HTTPException(status_code=400, detail='结束日期不能早于开始日期')
+        if end > today:
+            raise HTTPException(status_code=400, detail='结束日期不能晚于今天')
 
 
 def title_from_config(config):
@@ -1464,7 +1521,7 @@ def demo_templates():
         {
             'name': '主页资料采集',
             'description': '采集头像、banner 和简介，适合建立账号基础资料库。',
-            'payload': {'task_type': 'profile', 'targets': 'x', 'time_range': '1990-01-01:2030-01-01'},
+            'payload': {'task_type': 'profile', 'targets': 'x', 'time_range': default_time_range()},
         },
     ]
 
@@ -1475,14 +1532,14 @@ async def create_task(request: Request, user=Depends(require_user)):
     accounts = active_accounts()
     account_id = int(form.get('account_id') or 0)
     if not account_id:
-        return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': '请先选择 X 账号'}, status_code=400)
+        return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': '请先选择 X 账号', 'default_time_range': task_default_time_range()}, status_code=400)
     config = build_task_config(form)
     try:
         get_active_account_or_error(account_id)
         apply_proxy_selection(config, form.get('proxy_id'))
         validate_task_config(config)
     except HTTPException as exc:
-        return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': exc.detail}, status_code=400)
+        return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': exc.detail, 'default_time_range': config.get('time_range') or task_default_time_range()}, status_code=400)
     task_dir = TASKS_DIR / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     task_dir.mkdir(parents=True, exist_ok=True)
     log_path = task_dir / 'task.log'
@@ -1647,7 +1704,7 @@ def api_run_config(user=Depends(require_api_user)):
         'save_path': settings.get('save_path', ''),
         'user_lst': settings.get('user_lst', ''),
         'cookie': '',
-        'time_range': settings.get('time_range', '1990-01-01:2030-01-01'),
+        'time_range': settings.get('time_range') or default_time_range(),
         'has_retweet': bool(settings.get('has_retweet', False)),
         'high_lights': bool(settings.get('high_lights', False)),
         'likes': bool(settings.get('likes', False)),
@@ -1686,7 +1743,12 @@ async def api_run_start(request: Request, user=Depends(require_api_user)):
     proxy_id = int(data.get('proxy_id') or 0)
     if proxy_id:
         proxy = get_active_proxy_or_error(proxy_id)
-        data['proxy'] = proxy['proxy']
+        data['proxy'] = normalize_proxy_url(proxy['proxy'])
+    elif data.get('proxy'):
+        try:
+            data['proxy'] = normalize_proxy_url(data.get('proxy'))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
     return start_main_process(data)
 
 
@@ -1858,6 +1920,10 @@ async def api_add_proxy(request: Request, user=Depends(require_api_admin)):
     proxy = (data.get('proxy') or '').strip()
     if not proxy:
         raise HTTPException(status_code=400, detail='proxy 不能为空')
+    try:
+        proxy = normalize_proxy_url(proxy)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     with db() as conn:
         conn.execute(
             '''

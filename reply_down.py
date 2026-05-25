@@ -8,6 +8,7 @@ import time
 import json
 from datetime import datetime
 from urllib.parse import quote
+from proxy_utils import proxy_for_httpx
 from url_utils import quote_url
 from tag_down import get_heighest_video_quality
 from tag_down import hash_save_token
@@ -38,6 +39,9 @@ time_range = "2024-02-06:2024-08-06"
 
 media_down = True
 # 开启后将同时下载评论内容中的媒体文件.
+
+proxy = ''
+# 可选代理，支持 http://host:port、socks5://user:pass@host:port 或 host:port:user:pass
 
 # ------------------------ #
 
@@ -80,7 +84,7 @@ def download_control(media_lst):
             while True:  #下载失败重试次数
                 try:
                     async with semaphore:
-                        async with httpx.AsyncClient() as client:
+                        async with httpx.AsyncClient(proxy=proxy_for_httpx(proxy)) as client:
                             response = await client.get(quote_url(url), timeout=(3.05, 16))        #如果出现第五次或以上的下载失败,且确认不是网络问题,可以适当降低最大并发数量
                     with open(_file_name,'wb') as f:
                         f.write(response.content)
@@ -165,7 +169,7 @@ class Reply_down():
             _path = get_url_path(url)
             url = quote_url(url)
             self._headers['x-client-transaction-id'] = self.ct.generate_transaction_id(method='GET', path=_path)
-            response = httpx.get(url, headers=self._headers).text
+            response = httpx.get(url, headers=self._headers, proxy=proxy_for_httpx(proxy)).text
             try:
                 raw_data = json.loads(response)
             except Exception:
@@ -277,7 +281,7 @@ class Reply_down():
             _path = get_url_path(url)
             url = quote_url(url)
             self._headers['x-client-transaction-id'] = self.ct.generate_transaction_id(method='GET', path=_path)
-            response = httpx.get(url, headers=_headers).text
+            response = httpx.get(url, headers=_headers, proxy=proxy_for_httpx(proxy)).text
             try:
                 raw_data = json.loads(response)
             except Exception:
