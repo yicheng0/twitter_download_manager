@@ -177,10 +177,10 @@ function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-[hsl(var(--bg))] text-[hsl(var(--text))]">
-      <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(229,234,240,0.92)] backdrop-blur">
+      <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(205,214,226,0.94)] backdrop-blur">
         <div className="mx-auto flex min-h-16 max-w-[1440px] flex-wrap items-center gap-3 px-4 py-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#ffffff_0%,#eff6ff_100%)] shadow-sm">
+            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#f8fafc_0%,#e8eef6_100%)] shadow-sm">
               <img src="/logo.svg" alt="X 采集工作台" className="h-9 w-9" />
             </div>
             <div>
@@ -259,7 +259,7 @@ function LoginPage() {
         <Card className="w-full">
           <CardHeader>
             <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#ffffff_0%,#eff6ff_100%)] shadow-sm">
+              <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#f8fafc_0%,#e8eef6_100%)] shadow-sm">
                 <img src="/logo.svg" alt="X 采集工作台" className="h-9 w-9" />
               </div>
               <div>
@@ -318,7 +318,7 @@ function AuthenticatedApp() {
 
 function ActionBar({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center justify-end gap-2 rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#ffffff_0%,hsl(var(--panel-soft))_100%)] px-4 py-3">
+    <div className="flex flex-wrap items-center justify-end gap-2 rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#f8fafc_0%,hsl(var(--panel-soft))_100%)] px-4 py-3">
       {children}
     </div>
   );
@@ -482,7 +482,7 @@ function TemplateCard({ template, onClick }: { template: TaskTemplate; onClick: 
     <button
       type="button"
       onClick={onClick}
-      className="group flex min-h-44 flex-col justify-between rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#ffffff_0%,hsl(var(--panel-soft))_100%)] p-4 text-left transition-all duration-200 hover:-translate-y-[2px] hover:border-[hsl(var(--primary))] hover:shadow-[0_14px_30px_rgba(37,99,235,0.10)]"
+      className="group flex min-h-44 flex-col justify-between rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#f8fafc_0%,hsl(var(--panel-soft))_100%)] p-4 text-left transition-all duration-200 hover:-translate-y-[2px] hover:border-[hsl(var(--primary))] hover:shadow-[0_14px_30px_rgba(37,99,235,0.10)]"
     >
       <div>
         <div className="flex items-center gap-2">
@@ -1492,7 +1492,7 @@ function RunControlPage() {
               <button
                 key={template.id}
                 type="button"
-                className="group flex min-h-36 flex-col justify-between rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#ffffff_0%,hsl(var(--panel-soft))_100%)] p-4 text-left transition-all duration-200 hover:-translate-y-[2px] hover:border-[hsl(var(--primary))] hover:shadow-[0_14px_30px_rgba(37,99,235,0.10)]"
+                className="group flex min-h-36 flex-col justify-between rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#f8fafc_0%,hsl(var(--panel-soft))_100%)] p-4 text-left transition-all duration-200 hover:-translate-y-[2px] hover:border-[hsl(var(--primary))] hover:shadow-[0_14px_30px_rgba(37,99,235,0.10)]"
                 onClick={() => setForm((prev) => ({ ...DEFAULT_RUN_FORM, ...prev, ...template.runPayload, cookie: prev.cookie || '' }))}
               >
                 <div>

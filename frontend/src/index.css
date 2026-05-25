@@ -4,12 +4,12 @@
 
 :root {
   color-scheme: light;
-  --bg: 210 18% 92%;
+  --bg: 214 22% 87%;
   --panel: 210 24% 97%;
-  --panel-soft: 212 22% 90%;
+  --panel-soft: 214 24% 88%;
   --text: 216 32% 15%;
-  --muted: 216 14% 38%;
-  --line: 214 18% 80%;
+  --muted: 216 16% 34%;
+  --line: 214 18% 74%;
   --primary: 216 62% 42%;
   --primary-dark: 218 64% 31%;
   --accent: 39 78% 46%;
@@ -30,7 +30,7 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    linear-gradient(180deg, hsl(212 22% 88%) 0%, hsl(var(--bg)) 42%, hsl(210 18% 90%) 100%);
+    linear-gradient(180deg, hsl(214 24% 84%) 0%, hsl(var(--bg)) 44%, hsl(214 20% 85%) 100%);
   color: hsl(var(--text));
   font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
   font-size: 16px;
@@ -46,7 +46,7 @@ a {
   background: hsl(var(--panel));
   border: 1px solid hsl(var(--line));
   border-radius: 8px;
-  box-shadow: 0 12px 28px rgba(20, 34, 52, 0.08);
+  box-shadow: 0 12px 28px rgba(20, 34, 52, 0.1);
 }
 
 .panel-soft {

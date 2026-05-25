@@ -1,10 +1,10 @@
 :root {
   color-scheme: light;
-  --bg: #f5f7fb;
+  --bg: #dfe6ef;
   --panel: #ffffff;
   --text: #18202f;
-  --muted: #667085;
-  --line: #d9e0ea;
+  --muted: #4b5b70;
+  --line: #b9c5d3;
   --primary: #1665d8;
   --primary-dark: #0f4da6;
   --danger: #b42318;
@@ -18,7 +18,7 @@
 
 body {
   margin: 0;
-  background: var(--bg);
+  background: linear-gradient(180deg, #d4dde8 0%, var(--bg) 44%, #dbe3ec 100%);
   color: var(--text);
   font-family: "Segoe UI", Arial, sans-serif;
   font-size: 15px;
@@ -36,7 +36,7 @@ a {
   align-items: center;
   gap: 24px;
   padding: 0 24px;
-  background: #fff;
+  background: rgba(243, 246, 250, 0.94);
   border-bottom: 1px solid var(--line);
   position: sticky;
   top: 0;
@@ -137,7 +137,7 @@ button, .button {
   padding: 8px 14px;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #fff;
+  background: #f8fafc;
   color: var(--text);
   cursor: pointer;
   font: inherit;
@@ -236,7 +236,7 @@ input, select, textarea {
   border-radius: 6px;
   padding: 8px 10px;
   color: var(--text);
-  background: #fff;
+  background: #f8fafc;
   font: inherit;
 }
 
@@ -286,7 +286,7 @@ textarea {
 }
 
 .stats div {
-  background: #fff;
+  background: #f8fafc;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 14px;
@@ -319,7 +319,7 @@ textarea {
 
 .login-panel {
   width: min(420px, 100%);
-  background: #fff;
+  background: #f8fafc;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 26px;

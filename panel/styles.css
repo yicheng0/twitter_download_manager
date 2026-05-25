@@ -1,16 +1,16 @@
 :root {
   color-scheme: light;
-  --bg: #f2fbf8;
+  --bg: #dfe6ef;
   --panel: #ffffff;
-  --panel-soft: #f7fcfa;
-  --text: #133f3a;
-  --muted: #51716c;
-  --line: #cfe3dd;
-  --primary: #0d9488;
-  --primary-dark: #0f766e;
+  --panel-soft: #edf2f7;
+  --text: #172033;
+  --muted: #4b5b70;
+  --line: #b9c5d3;
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
   --accent: #ea580c;
   --danger: #b42318;
-  --shadow: 0 18px 45px rgba(19, 78, 74, 0.12);
+  --shadow: 0 18px 45px rgba(20, 34, 52, 0.14);
 }
 
 * {
@@ -20,7 +20,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: var(--bg);
+  background: linear-gradient(180deg, #d4dde8 0%, var(--bg) 44%, #dbe3ec 100%);
   color: var(--text);
   font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
   font-size: 16px;
@@ -79,7 +79,7 @@ h2 {
   padding: 0 16px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.82);
+  background: rgba(248, 250, 252, 0.86);
   color: var(--muted);
   font-weight: 700;
 }
@@ -159,7 +159,7 @@ textarea,
 select {
   width: 100%;
   min-height: 44px;
-  border: 1px solid #b9d5ce;
+  border: 1px solid var(--line);
   border-radius: 8px;
   background: #fff;
   color: var(--text);
@@ -179,7 +179,7 @@ select:focus-visible,
 button:focus-visible,
 pre:focus-visible {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.2);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
 }
 
 .switch-grid {
@@ -331,10 +331,10 @@ svg {
 
 .log-card {
   margin-top: 14px;
-  border: 1px solid #0f766e;
+  border: 1px solid #1e3a8a;
   border-radius: 8px;
   overflow: hidden;
-  background: #082f2c;
+  background: #0f172a;
 }
 
 .log-head {
@@ -343,12 +343,12 @@ svg {
   align-items: center;
   gap: 12px;
   padding: 10px 12px;
-  color: #d7fffa;
+  color: #dbeafe;
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 .log-head .text-button {
-  color: #99f6e4;
+  color: #bfdbfe;
 }
 
 pre {
@@ -357,7 +357,7 @@ pre {
   margin: 0;
   padding: 14px;
   overflow: auto;
-  color: #e6fffb;
+  color: #e5e7eb;
   white-space: pre-wrap;
   word-break: break-word;
   font-family: Consolas, "Cascadia Mono", monospace;
@@ -383,7 +383,7 @@ pre {
   max-width: min(420px, calc(100vw - 40px));
   padding: 12px 14px;
   border-radius: 8px;
-  background: #123b37;
+  background: #172033;
   color: #fff;
   box-shadow: var(--shadow);
   opacity: 0;
