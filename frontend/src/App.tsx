@@ -18,10 +18,10 @@ type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'primary';
 const USABLE_ACCOUNT_STATUSES = new Set(['active', 'unknown', 'check_failed']);
 
 const DEFAULT_TASK_FORM: TaskFormValues = {
-  task_type: 'user_media',
+  task_type: 'benchmark_account',
   account_id: 0,
   targets: '',
-  time_range: defaultTaskTimeRange(),
+  time_range: rangeFromPreset('7d'),
   max_concurrent_requests: 8,
   has_retweet: false,
   high_lights: false,
@@ -37,9 +37,9 @@ const DEFAULT_TASK_FORM: TaskFormValues = {
   tag: '',
   advanced_filter: '',
   down_count: 50,
-  tweet_limit: 50,
+  tweet_limit: 10,
   media_latest: false,
-  text_down: false,
+  text_down: true,
   media_down: true,
   min_replies: 1,
   min_faves: 0,
@@ -474,6 +474,15 @@ function TaskListPage() {
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: ['tasks'], queryFn: () => api.tasks(), refetchInterval: 5000 });
   const tasks = data?.tasks || [];
+  const deleteTask = useMutation({
+    mutationFn: (id: number) => api.deleteTask(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+  });
+  const handleDeleteTask = (id: number) => {
+    if (window.confirm('确定删除这个任务吗？任务记录和输出文件都会被删除。')) {
+      deleteTask.mutate(id);
+    }
+  };
   const stats = {
     total: tasks.length,
     queued: tasks.filter((task) => task.status === 'queued').length,
@@ -520,7 +529,7 @@ function TaskListPage() {
                 </tr>
               </thead>
               <tbody>
-                {tasks.map((task) => <TaskRow key={task.id} task={task} />)}
+                {tasks.map((task) => <TaskRow key={task.id} task={task} onDelete={handleDeleteTask} deleting={deleteTask.isPending} />)}
                 {!isLoading && tasks.length === 0 && (
                   <tr>
                     <td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={6}>
@@ -662,7 +671,7 @@ function taskCopyText(task: Task) {
   ].join('\n');
 }
 
-function TaskRow({ task }: { task: Task }) {
+function TaskRow({ task, onDelete, deleting }: { task: Task; onDelete: (id: number) => void; deleting: boolean }) {
   const navigate = useNavigate();
   return (
     <tr className="border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]">
@@ -677,9 +686,14 @@ function TaskRow({ task }: { task: Task }) {
       <td className="px-4 py-3">{task.username || '-'}</td>
       <td className="px-4 py-3">{task.created_at}</td>
       <td className="px-4 py-3 text-right">
-        <Button variant="secondary" size="sm" onClick={() => navigate(`/tasks/${task.id}`)}>
-          查看
-        </Button>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" size="sm" onClick={() => navigate(`/tasks/${task.id}`)}>
+            查看
+          </Button>
+          <Button variant="danger" size="sm" onClick={() => onDelete(task.id)} disabled={deleting}>
+            删除
+          </Button>
+        </div>
       </td>
     </tr>
   );
@@ -695,7 +709,8 @@ function TaskFormPage() {
   const usableAccounts = accounts?.filter((account) => USABLE_ACCOUNT_STATUSES.has(account.status));
   const usableProxies = proxies.filter((proxy) => proxy.enabled && proxy.status === 'active');
   const [form, setForm] = useState<TaskFormValues>(DEFAULT_TASK_FORM);
-  const [timePreset, setTimePreset] = useState<TimePreset>('90d');
+  const [timePreset, setTimePreset] = useState<TimePreset>('7d');
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [error, setError] = useState('');
   const create = useMutation({
     mutationFn: () => {
@@ -745,7 +760,7 @@ function TaskFormPage() {
     <div className="space-y-4">
       <div>
         <h2 className="text-2xl font-semibold">新建任务</h2>
-        <p className="mt-1 text-sm text-[hsl(var(--muted))]">按任务类型填写对应字段，提交后自动进入队列。</p>
+        <p className="mt-1 text-sm text-[hsl(var(--muted))]">默认采集账号近况：粘贴 X 主页链接，选择条数和内容类型后提交。</p>
       </div>
       <ActionBar>
         <Button onClick={() => create.mutate()} disabled={create.isPending || !usableAccounts?.length || Boolean(timeError)}>
@@ -760,11 +775,52 @@ function TaskFormPage() {
       <Card>
         <CardHeader>
           <div>
-            <h3 className="font-semibold">采集时间范围</h3>
-            <p className="mt-1 text-sm text-[hsl(var(--muted))]">先选采集周期，系统会自动转换成任务需要的日期格式。</p>
+            <h3 className="font-semibold">基础采集</h3>
+            <p className="mt-1 text-sm text-[hsl(var(--muted))]">例如输入 https://x.com/arsenal，采最近 10 条推文，包含图片和视频。</p>
           </div>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
+          <Field label="目标账号">
+            <Textarea
+              value={form.targets}
+              onChange={(e) => setForm((prev) => ({ ...prev, targets: e.target.value }))}
+              rows={3}
+              placeholder="https://x.com/arsenal 或 @arsenal"
+            />
+          </Field>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="采集条数">
+              <Input type="number" min={1} value={form.tweet_limit} onChange={(e) => setForm((prev) => ({ ...prev, tweet_limit: Number(e.target.value) }))} />
+            </Field>
+            <Field label="X账号">
+              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.account_id} onChange={(e) => setForm((prev) => ({ ...prev, account_id: Number(e.target.value) }))}>
+                {(usableAccounts || []).map((account: Account) => (
+                  <option key={account.id} value={account.id}>
+                    {account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.status !== 'active' ? ` · ${statusLabel(account.status)}` : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            <Check label="推文文本" checked={true} disabled onCheckedChange={() => undefined} />
+            <Check label="图片" checked={true} disabled onCheckedChange={() => undefined} />
+            <Check label="视频" checked={form.has_video} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_video: checked }))} />
+          </div>
+          <Field label="代理池">
+            <select
+              className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3"
+              value={form.proxy_id ?? ''}
+              onChange={(e) => setForm((prev) => ({ ...prev, proxy_id: e.target.value ? Number(e.target.value) : null }))}
+            >
+              <option value="">不使用代理池</option>
+              {usableProxies.map((proxy) => (
+                <option key={proxy.id} value={proxy.id}>
+                  {proxy.label}
+                </option>
+              ))}
+            </select>
+          </Field>
           <TimeRangePicker
             value={form.time_range}
             preset={timePreset}
@@ -775,7 +831,13 @@ function TaskFormPage() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="flex justify-end">
+        <Button variant="secondary" onClick={() => setShowAdvanced((value) => !value)}>
+          {showAdvanced ? '收起更多设置' : '更多设置'}
+        </Button>
+      </div>
+
+      {showAdvanced && <div className="grid gap-4 xl:grid-cols-2">
         <Card>
           <CardHeader><h3 className="font-semibold">基础</h3></CardHeader>
           <CardContent className="space-y-4">
@@ -891,7 +953,7 @@ function TaskFormPage() {
             </Field>
           </CardContent>
         </Card>
-      </div>
+      </div>}
 
     </div>
   );
@@ -906,10 +968,10 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function Check({ label, checked, onCheckedChange }: { label: string; checked: boolean; onCheckedChange: (checked: boolean) => void }) {
+function Check({ label, checked, onCheckedChange, disabled = false }: { label: string; checked: boolean; onCheckedChange: (checked: boolean) => void; disabled?: boolean }) {
   return (
-    <label className="flex min-h-11 items-center gap-3 rounded-lg border border-[hsl(var(--line))] px-3 py-2 text-sm">
-      <input type="checkbox" checked={checked} onChange={(event) => onCheckedChange(event.target.checked)} className="h-4 w-4" />
+    <label className={cn('flex min-h-11 items-center gap-3 rounded-lg border border-[hsl(var(--line))] px-3 py-2 text-sm', disabled && 'text-[hsl(var(--muted))]')}>
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onCheckedChange(event.target.checked)} className="h-4 w-4" />
       <span>{label}</span>
     </label>
   );
@@ -962,12 +1024,20 @@ function TimeRangePicker({
 
 function TaskDetailPage({ id }: { id: number }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const { data, isLoading } = useQuery({ queryKey: ['task', id], queryFn: () => api.task(id), refetchInterval: 4000 });
   const task = data?.task;
   const [copyStatus, setCopyStatus] = useState('');
   const cancel = useMutation({
     mutationFn: () => api.cancelTask(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['task', id] }),
+  });
+  const deleteTask = useMutation({
+    mutationFn: () => api.deleteTask(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tasks'] });
+      navigate('/tasks');
+    },
   });
 
   if (isLoading && !task) return <div className="text-sm text-[hsl(var(--muted))]">加载中...</div>;
@@ -989,6 +1059,17 @@ function TaskDetailPage({ id }: { id: number }) {
             取消任务
           </Button>
         )}
+        <Button
+          variant="danger"
+          onClick={() => {
+            if (window.confirm('确定删除这个任务吗？任务记录和输出文件都会被删除。')) {
+              deleteTask.mutate();
+            }
+          }}
+          disabled={deleteTask.isPending}
+        >
+          删除任务
+        </Button>
         <Button variant="secondary" onClick={() => (window.location.href = `/tasks/${task.id}/download`)}>
           打包下载
         </Button>
@@ -1015,7 +1096,7 @@ function TaskDetailPage({ id }: { id: number }) {
       </div>
 
       <div className="grid gap-3 md:grid-cols-4">
-        <InfoCard title="采集记录" value={String(task.summary?.records ?? 0)} />
+        <InfoCard title={task.task_type === 'profile' ? '资料文件' : '采集记录'} value={String(task.task_type === 'profile' ? task.summary?.files ?? 0 : task.summary?.records ?? 0)} />
         <InfoCard title="媒体文件" value={String(task.summary?.media_files ?? 0)} />
         <InfoCard title="互动合计" value={`${task.summary?.favorites ?? 0}/${task.summary?.retweets ?? 0}/${task.summary?.replies ?? 0}`} />
         <InfoCard title="输出大小" value={formatBytes(task.summary?.total_bytes ?? 0)} />

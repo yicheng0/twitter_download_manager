@@ -59,7 +59,8 @@ def profile_down(screen_name, path):
     
     except Exception as e:
         print(f'用户: {screen_name}  失败: {e}')
-        return True
+        return False
+    return True
 
 
 

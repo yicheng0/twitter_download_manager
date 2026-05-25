@@ -31,7 +31,7 @@ const baseForm = {
   tag: '',
   advanced_filter: '',
   down_count: 50,
-  tweet_limit: 50,
+  tweet_limit: 10,
   media_latest: false,
   text_down: false,
   media_down: true,
@@ -48,14 +48,14 @@ export function createTaskTemplatePayload(overrides: Partial<TaskFormValues>): P
 export const taskTemplates: TaskTemplate[] = [
   {
     id: 'benchmark-account',
-    name: '对标账号采集',
-    description: '输入账号链接，抓取最近推文文本、互动数据和媒体。',
+    name: '账号近况采集',
+    description: '粘贴账号主页链接，抓取最近推文文本、互动数据和媒体。',
     task_type: 'benchmark_account',
     targetPath: '/tasks/new',
     payload: createTaskTemplatePayload({
       task_type: 'benchmark_account',
       targets: 'https://x.com/elonmusk',
-      tweet_limit: 50,
+      tweet_limit: 10,
       has_video: true,
       has_retweet: false,
       time_range: defaultTaskTimeRange(),

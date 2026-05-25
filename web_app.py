@@ -6,6 +6,7 @@ import os
 import re
 import signal
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -1473,6 +1474,26 @@ def parse_int_field(value, default, label):
         raise HTTPException(status_code=400, detail=f'{label}需要是整数')
 
 
+def normalize_user_targets(value, label='目标账号'):
+    from benchmark_down import parse_screen_name
+
+    raw_targets = str(value or '').replace(',', '\n').splitlines()
+    parsed = []
+    invalid = []
+    for raw in raw_targets:
+        raw = raw.strip()
+        if not raw:
+            continue
+        screen_name = parse_screen_name(raw)
+        if screen_name:
+            parsed.append(screen_name)
+        else:
+            invalid.append(raw)
+    if invalid:
+        raise HTTPException(status_code=400, detail=f'{label}需要填写用户名或账号主页链接，推文链接请改用评论区任务。')
+    return ','.join(parsed)
+
+
 def build_task_config(form):
     task_type = form.get('task_type')
     config = {
@@ -1491,7 +1512,7 @@ def build_task_config(form):
             'tag': form.get('tag') or '',
             'advanced_filter': form.get('advanced_filter') or '',
             'down_count': int(form.get('down_count') or 50),
-            'tweet_limit': parse_int_field(form.get('tweet_limit'), 50, '拉取条数'),
+            'tweet_limit': parse_int_field(form.get('tweet_limit'), 10, '拉取条数'),
             'min_replies': int(form.get('min_replies') or 1),
             'min_faves': int(form.get('min_faves') or 0),
             'min_retweets': int(form.get('min_retweets') or 0),
@@ -1526,13 +1547,11 @@ def validate_task_config(config):
         raise HTTPException(status_code=400, detail='请填写目标用户或推文链接')
     if task_type == 'search' and not str(config.get('tag') or config.get('advanced_filter') or '').strip():
         raise HTTPException(status_code=400, detail='请填写 Tag 或高级搜索条件')
+    if task_type in {'user_media', 'benchmark_account', 'text', 'profile'}:
+        config['targets'] = normalize_user_targets(config.get('targets'))
+        if not config['targets']:
+            raise HTTPException(status_code=400, detail='请填写目标用户名')
     if task_type == 'benchmark_account':
-        from benchmark_down import parse_screen_name
-
-        targets = str(config.get('targets') or '').replace(',', '\n').splitlines()
-        parsed_targets = [parse_screen_name(target) for target in targets]
-        if not [target for target in parsed_targets if target]:
-            raise HTTPException(status_code=400, detail='请填写有效的对标账号链接或用户名')
         tweet_limit = parse_int_field(config.get('tweet_limit'), 0, '拉取条数')
         if tweet_limit <= 0:
             raise HTTPException(status_code=400, detail='拉取条数需要是大于 0 的整数')
@@ -1626,9 +1645,9 @@ def demo_templates():
     recent_30 = f'{(datetime.now() - timedelta(days=29)).strftime("%Y-%m-%d")}:{datetime.now().strftime("%Y-%m-%d")}'
     return [
         {
-            'name': '对标账号基础采集',
-            'description': '输入账号链接，抓取最近推文文本、互动数据和媒体，适合竞品账号快速采样。',
-            'payload': {'task_type': 'benchmark_account', 'targets': 'https://x.com/elonmusk', 'time_range': recent_90, 'tweet_limit': 50, 'has_video': True},
+            'name': '账号近况采集',
+            'description': '粘贴账号主页链接，抓取最近推文文本、互动数据和媒体，适合快速采样。',
+            'payload': {'task_type': 'benchmark_account', 'targets': 'https://x.com/arsenal', 'time_range': recent_30, 'tweet_limit': 10, 'has_video': True},
         },
         {
             'name': '重点账号动态采集',
@@ -1700,6 +1719,34 @@ def get_task_or_404(task_id, user):
     return task
 
 
+def remove_task_files(task):
+    output_dir = Path(task['output_dir'])
+    if output_dir.exists():
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+
+def delete_task_row(task_id, user):
+    task = get_task_or_404(task_id, user)
+    if task['status'] in {'queued', 'running'}:
+        if task['status'] == 'queued':
+            with db() as conn:
+                conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ?, last_error_type = ? where id = ?", (now(), '用户删除任务', 'cancelled', task_id))
+        elif task['process_id']:
+            try:
+                if os.name == 'nt':
+                    subprocess.run(['taskkill', '/PID', str(task['process_id']), '/T', '/F'], check=False, capture_output=True)
+                else:
+                    os.kill(int(task['process_id']), signal.SIGTERM)
+            except Exception:
+                pass
+            with db() as conn:
+                conn.execute("update tasks set status = 'cancelled', finished_at = ?, process_id = null, error = ?, last_error_type = ? where id = ?", (now(), '用户删除任务', 'cancelled', task_id))
+    remove_task_files(task)
+    with db() as conn:
+        conn.execute('delete from tasks where id = ?', (task_id,))
+    return {'ok': True}
+
+
 @app.get('/tasks/{task_id}', response_class=HTMLResponse)
 def task_detail(task_id: int, request: Request, user=Depends(require_user)):
     index = frontend_index()
@@ -1735,6 +1782,12 @@ def cancel_task(task_id: int, user=Depends(require_user)):
         with db() as conn:
             conn.execute("update tasks set status = 'cancelled', finished_at = ?, process_id = null, error = ?, last_error_type = ? where id = ?", (now(), '用户取消', 'cancelled', task_id))
     return RedirectResponse(f'/tasks/{task_id}', status_code=303)
+
+
+@app.post('/tasks/{task_id}/delete')
+def delete_task(task_id: int, user=Depends(require_user)):
+    delete_task_row(task_id, user)
+    return RedirectResponse('/tasks', status_code=303)
 
 
 @app.get('/tasks/{task_id}/download')
@@ -1959,7 +2012,7 @@ async def api_create_task(request: Request, user=Depends(require_api_user)):
             'tag': data.get('tag') or '',
             'advanced_filter': data.get('advanced_filter') or '',
             'down_count': int(data.get('down_count') or 50),
-            'tweet_limit': parse_int_field(data.get('tweet_limit'), 50, '拉取条数'),
+            'tweet_limit': parse_int_field(data.get('tweet_limit'), 10, '拉取条数'),
             'min_replies': int(data.get('min_replies') or 1),
             'min_faves': int(data.get('min_faves') or 0),
             'min_retweets': int(data.get('min_retweets') or 0),
@@ -2026,6 +2079,11 @@ def api_cancel_task(task_id: int, user=Depends(require_api_user)):
     with db() as conn:
         refreshed = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id where tasks.id = ?', (task_id,)).fetchone()
     return {'task': task_payload(refreshed, include_config=True, include_log=True, include_files=True)}
+
+
+@app.delete('/api/tasks/{task_id}')
+def api_delete_task(task_id: int, user=Depends(require_api_user)):
+    return delete_task_row(task_id, user)
 
 
 @app.get('/api/accounts')

@@ -4,14 +4,43 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 
 from proxy_utils import proxy_for_httpx
 
 
+def parse_screen_name(value):
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    text = text.splitlines()[0].strip()
+    if text.startswith('@'):
+        text = text[1:]
+    if text.lower().startswith(('x.com/', 'twitter.com/', 'www.x.com/', 'www.twitter.com/')):
+        text = 'https://' + text
+    if '://' in text:
+        parsed = urlparse(text)
+        parts = [part for part in parsed.path.split('/') if part]
+        if not parts or len(parts) > 1:
+            return ''
+        text = parts[0]
+    else:
+        text = text.split('?', 1)[0].strip('/')
+        if '/' in text:
+            return ''
+    if text.startswith('@'):
+        text = text[1:]
+    if not re.match(r'^[A-Za-z0-9_]{1,15}$', text):
+        return ''
+    return text
+
+
 def clean_list(value):
     if isinstance(value, list):
-        return [str(item).strip().lstrip('@') for item in value if str(item).strip()]
-    return [item.strip().lstrip('@') for item in str(value or '').split(',') if item.strip()]
+        items = value
+    else:
+        items = str(value or '').replace(',', '\n').splitlines()
+    return [parsed for item in items if (parsed := parse_screen_name(item))]
 
 
 def ensure_task_dir(path):
@@ -195,10 +224,16 @@ def run_profile(config, cookie, output_dir):
     profile_down._headers['x-csrf-token'] = re.findall(r'ct0=(.*?);', cookie)[0]
     profile_down._path = output_dir
     os.makedirs(output_dir, exist_ok=True)
+    failed = []
     for user in users:
         print(f'开始获取主页资料: {user}', flush=True)
         profile_down._headers['referer'] = 'https://twitter.com/' + user
-        profile_down.profile_down(user, output_dir)
+        if not profile_down.profile_down(user, output_dir):
+            failed.append(user)
+    if failed and len(failed) == len(users):
+        raise RuntimeError('主页资料采集失败: ' + ', '.join(failed))
+    if failed:
+        print('部分主页资料采集失败: ' + ', '.join(failed), flush=True)
     print('主页资料任务完成', flush=True)
 
 

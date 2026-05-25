@@ -29,7 +29,7 @@ def parse_screen_name(value):
     if '://' in text:
         parsed = urlparse(text)
         parts = [part for part in parsed.path.split('/') if part]
-        if not parts:
+        if not parts or len(parts) > 1:
             return ''
         text = parts[0]
     else:
