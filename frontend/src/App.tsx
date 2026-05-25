@@ -37,6 +37,7 @@ const DEFAULT_TASK_FORM: TaskFormValues = {
   tag: '',
   advanced_filter: '',
   down_count: 50,
+  tweet_limit: 50,
   media_latest: false,
   text_down: false,
   media_down: true,
@@ -781,6 +782,7 @@ function TaskFormPage() {
             <Field label="任务类型">
               <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.task_type} onChange={(e) => setForm((prev) => ({ ...prev, task_type: e.target.value as TaskType }))}>
                 <option value="user_media">用户媒体</option>
+                <option value="benchmark_account">对标账号</option>
                 <option value="search">搜索/Tag</option>
                 <option value="text">用户文本</option>
                 <option value="replies">评论区</option>
@@ -801,6 +803,15 @@ function TaskFormPage() {
             </Field>
             <Field label="并发下载数">
               <Input type="number" value={form.max_concurrent_requests} onChange={(e) => setForm((prev) => ({ ...prev, max_concurrent_requests: Number(e.target.value) }))} />
+            </Field>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><h3 className="font-semibold">对标账号</h3></CardHeader>
+          <CardContent className="space-y-4">
+            <Field label="拉取条数">
+              <Input type="number" min={1} value={form.tweet_limit} onChange={(e) => setForm((prev) => ({ ...prev, tweet_limit: Number(e.target.value) }))} />
             </Field>
           </CardContent>
         </Card>

@@ -1466,6 +1466,13 @@ def new_task_page(request: Request, user=Depends(require_user)):
     return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': None, 'default_time_range': task_default_time_range()})
 
 
+def parse_int_field(value, default, label):
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f'{label}需要是整数')
+
+
 def build_task_config(form):
     task_type = form.get('task_type')
     config = {
@@ -1484,6 +1491,7 @@ def build_task_config(form):
             'tag': form.get('tag') or '',
             'advanced_filter': form.get('advanced_filter') or '',
             'down_count': int(form.get('down_count') or 50),
+            'tweet_limit': parse_int_field(form.get('tweet_limit'), 50, '拉取条数'),
             'min_replies': int(form.get('min_replies') or 1),
             'min_faves': int(form.get('min_faves') or 0),
             'min_retweets': int(form.get('min_retweets') or 0),
@@ -1510,14 +1518,25 @@ def apply_proxy_selection(config, proxy_id):
 
 def validate_task_config(config):
     task_type = config.get('task_type')
-    if task_type not in {'user_media', 'search', 'text', 'replies', 'profile'}:
+    if task_type not in {'user_media', 'benchmark_account', 'search', 'text', 'replies', 'profile'}:
         raise HTTPException(status_code=400, detail='未知任务类型')
-    if task_type in {'user_media', 'text', 'profile'} and not str(config.get('targets') or '').strip():
+    if task_type in {'user_media', 'benchmark_account', 'text', 'profile'} and not str(config.get('targets') or '').strip():
         raise HTTPException(status_code=400, detail='请填写目标用户名')
     if task_type == 'replies' and not str(config.get('targets') or '').strip():
         raise HTTPException(status_code=400, detail='请填写目标用户或推文链接')
     if task_type == 'search' and not str(config.get('tag') or config.get('advanced_filter') or '').strip():
         raise HTTPException(status_code=400, detail='请填写 Tag 或高级搜索条件')
+    if task_type == 'benchmark_account':
+        from benchmark_down import parse_screen_name
+
+        targets = str(config.get('targets') or '').replace(',', '\n').splitlines()
+        parsed_targets = [parse_screen_name(target) for target in targets]
+        if not [target for target in parsed_targets if target]:
+            raise HTTPException(status_code=400, detail='请填写有效的对标账号链接或用户名')
+        tweet_limit = parse_int_field(config.get('tweet_limit'), 0, '拉取条数')
+        if tweet_limit <= 0:
+            raise HTTPException(status_code=400, detail='拉取条数需要是大于 0 的整数')
+        config['tweet_limit'] = tweet_limit
     if config.get('time_range') and not re.match(r'^\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}$', str(config.get('time_range'))):
         raise HTTPException(status_code=400, detail='时间范围格式应为 YYYY-MM-DD:YYYY-MM-DD')
     if config.get('time_range'):
@@ -1532,6 +1551,7 @@ def validate_task_config(config):
 def title_from_config(config):
     names = {
         'user_media': '用户媒体',
+        'benchmark_account': '对标账号',
         'search': '搜索/Tag',
         'text': '用户文本',
         'replies': '评论区',
@@ -1606,6 +1626,11 @@ def demo_templates():
     recent_30 = f'{(datetime.now() - timedelta(days=29)).strftime("%Y-%m-%d")}:{datetime.now().strftime("%Y-%m-%d")}'
     return [
         {
+            'name': '对标账号基础采集',
+            'description': '输入账号链接，抓取最近推文文本、互动数据和媒体，适合竞品账号快速采样。',
+            'payload': {'task_type': 'benchmark_account', 'targets': 'https://x.com/elonmusk', 'time_range': recent_90, 'tweet_limit': 50, 'has_video': True},
+        },
+        {
             'name': '重点账号动态采集',
             'description': '按用户名采集推文、媒体和互动指标，适合竞品账号与重点人物动态归档。',
             'payload': {'task_type': 'user_media', 'targets': 'elonmusk', 'time_range': recent_90, 'has_video': True, 'md_output': True},
@@ -1635,12 +1660,13 @@ async def create_task(request: Request, user=Depends(require_user)):
     account_id = int(form.get('account_id') or 0)
     if not account_id:
         return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': '请先选择 X 账号', 'default_time_range': task_default_time_range()}, status_code=400)
-    config = build_task_config(form)
     try:
+        config = build_task_config(form)
         get_active_account_or_error(account_id)
         apply_proxy_selection(config, form.get('proxy_id'))
         validate_task_config(config)
     except HTTPException as exc:
+        config = locals().get('config') or {'time_range': form.get('time_range') or task_default_time_range()}
         return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': exc.detail, 'default_time_range': config.get('time_range') or task_default_time_range()}, status_code=400)
     task_dir = TASKS_DIR / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
     task_dir.mkdir(parents=True, exist_ok=True)
@@ -1933,6 +1959,7 @@ async def api_create_task(request: Request, user=Depends(require_api_user)):
             'tag': data.get('tag') or '',
             'advanced_filter': data.get('advanced_filter') or '',
             'down_count': int(data.get('down_count') or 50),
+            'tweet_limit': parse_int_field(data.get('tweet_limit'), 50, '拉取条数'),
             'min_replies': int(data.get('min_replies') or 1),
             'min_faves': int(data.get('min_faves') or 0),
             'min_retweets': int(data.get('min_retweets') or 0),

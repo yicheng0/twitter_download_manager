@@ -159,7 +159,7 @@ export type RunConfig = {
   project_path?: string;
 };
 
-export type TaskType = 'user_media' | 'search' | 'text' | 'replies' | 'profile';
+export type TaskType = 'user_media' | 'benchmark_account' | 'search' | 'text' | 'replies' | 'profile';
 
 export type TaskFormValues = {
   task_type: TaskType;
@@ -181,6 +181,7 @@ export type TaskFormValues = {
   tag: string;
   advanced_filter: string;
   down_count: number;
+  tweet_limit: number;
   media_latest: boolean;
   text_down: boolean;
   media_down: boolean;

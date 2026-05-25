@@ -202,6 +202,12 @@ def run_profile(config, cookie, output_dir):
     print('主页资料任务完成', flush=True)
 
 
+def run_benchmark_account(config, cookie, output_dir):
+    import benchmark_down
+
+    benchmark_down.run_benchmark_account(config, cookie, output_dir)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True)
@@ -223,6 +229,8 @@ def main():
 
     if task_type == 'user_media':
         run_user_media(config, cookie, output_dir)
+    elif task_type == 'benchmark_account':
+        run_benchmark_account(config, cookie, output_dir)
     elif task_type == 'search':
         run_search(config, cookie, output_dir)
     elif task_type == 'text':

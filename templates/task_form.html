@@ -20,6 +20,7 @@
       任务类型
       <select name="task_type" required>
         <option value="user_media">用户媒体</option>
+        <option value="benchmark_account">对标账号</option>
         <option value="search">搜索/Tag</option>
         <option value="text">用户文本</option>
         <option value="replies">评论区</option>
@@ -36,7 +37,7 @@
     </label>
     <label>
       目标用户 / 推文链接
-      <textarea name="targets" rows="4" placeholder="用户媒体/文本/主页: alice,bob&#10;评论区: 每行一个 @user 或 https://x.com/.../status/..."></textarea>
+      <textarea name="targets" rows="4" placeholder="对标账号: https://x.com/alice 或 @alice&#10;用户媒体/文本/主页: alice,bob&#10;评论区: 每行一个 @user 或 https://x.com/.../status/..."></textarea>
     </label>
     <label>
       时间范围
@@ -45,6 +46,14 @@
     <label>
       并发下载数
       <input name="max_concurrent_requests" type="number" min="1" max="64" value="8">
+    </label>
+  </section>
+
+  <section class="panel form-section">
+    <h2>对标账号</h2>
+    <label>
+      拉取条数
+      <input name="tweet_limit" type="number" min="1" value="50">
     </label>
   </section>
 
