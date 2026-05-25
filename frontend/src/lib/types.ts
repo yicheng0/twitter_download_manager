@@ -107,6 +107,19 @@ export type ApiError = {
   detail: string;
 };
 
+export type BitBrowserImportResult = {
+  browser_id: string;
+  status: 'imported' | 'failed';
+  message: string;
+  screen_name?: string;
+};
+
+export type BitBrowserImportResponse = {
+  imported: number;
+  failed: number;
+  results: BitBrowserImportResult[];
+};
+
 export type RunStatus = {
   status: string;
   started_at: number | null;
