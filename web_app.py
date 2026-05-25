@@ -2127,14 +2127,13 @@ async def api_local_browser_login_complete(request: Request):
         session = local_browser_login_sessions.get(token)
         if not session:
             raise HTTPException(status_code=404, detail='本地授权登录已不存在或已过期')
-        if not ok:
-            session['status'] = 'failed'
-            session['message'] = f'账号 Cookie 校验失败：{redact_sensitive(validation_error)}'
-            return local_browser_login_payload(token)
         final_screen_name = checked_screen_name or screen_name
         save_account(final_screen_name or 'Local Chrome Login', auth_token, ct0, final_screen_name)
         session['status'] = 'completed'
-        session['message'] = '登录成功，账号已保存。'
+        if ok:
+            session['message'] = '登录成功，账号已保存。'
+        else:
+            session['message'] = f'已获取登录 Cookie 并保存账号；账号名称暂未识别，后续可在账号检测中更新状态。校验提示：{redact_sensitive(validation_error)}'
         session['screen_name'] = final_screen_name or ''
         return local_browser_login_payload(token)
 
