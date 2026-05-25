@@ -11,7 +11,7 @@ services:
     volumes:
       - ./data:/data
     ports:
-      - "127.0.0.1:8000:8000"
+      - "${APP_BIND_HOST:-0.0.0.0}:${APP_HOST_PORT:-18081}:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5).read()"]
       interval: 30s
@@ -27,6 +27,8 @@ services:
   caddy:
     image: caddy:2.8-alpine
     restart: unless-stopped
+    profiles:
+      - caddy
     depends_on:
       - app
     environment:
