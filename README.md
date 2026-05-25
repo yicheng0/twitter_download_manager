@@ -1,62 +1,54 @@
-# 我的 Twitter/X 下载管理器
+# X/Twitter Download Manager
 
-这是我整理维护的 Twitter/X 本地下载管理器版本。项目保留脚本下载能力，同时补充了本地 Web 面板，方便在浏览器里配置任务、查看日志和管理下载结果。
+面向 X/Twitter 内容备份与任务管理的本地工具集。项目提供传统脚本、轻量本地面板和完整 Web 管理端，支持按用户、关键词、高级搜索条件和评论区任务采集媒体与文本内容，并提供账号、代理、任务日志和结果汇总能力。
 
-本项目仅用于学习、研究和个人资料备份。请使用自己的账号信息，遵守所在地区法律法规、目标平台规则和内容版权要求。
+> 本项目仅用于学习研究、个人资料备份和授权场景下的数据整理。使用者需要自行遵守所在地区法律法规、X/Twitter 平台规则、内容版权和隐私要求。
 
-## 功能概览
+## English Summary
 
-- 按用户名下载推文图片、视频和 GIF。
-- 支持多用户、时间范围、是否包含转推、亮点、喜欢内容等选项。
-- 支持 Tag / 高级搜索下载，可配合 X 高级搜索语法使用。
-- 支持指定用户纯文本推文获取。
-- 支持评论区内容下载。
-- 支持用户主页资料获取，包括头像、banner 和简介。
-- 支持去重记录、自动同步、Markdown 记录和 CSV 统计。
-- 提供本地浏览器面板，用表单启动任务并查看实时日志。
+X/Twitter Download Manager is a local toolkit for media download, task management, and authorized content archiving. It includes Python scripts, a lightweight local panel, a full Web console, Docker deployment files, account/session management, proxy configuration, task logs, and result reports.
 
-## 环境要求
+Use it only for lawful research, personal backup, or authorized internal workflows. The project does not provide any guarantee for bypassing platform limits, access controls, copyright restrictions, or account risk.
 
-- Python 3.8 或更高版本。
-- 建议使用虚拟环境。
-- 需要一个可用的 X/Twitter 登录会话 Cookie，至少包含 `auth_token` 和 `ct0`。
+## Features
 
-安装依赖：
+- Download images, videos and GIFs by X/Twitter username.
+- Support multiple accounts, time ranges, retweets, Highlights and Likes options.
+- Download by tag, keyword or X advanced search syntax.
+- Export text-only tweets for specified users.
+- Download replies for supported users or tweet links.
+- Fetch profile information, including avatar, banner and bio.
+- Generate Markdown records, CSV statistics and task summary reports.
+- Manage tasks through a browser-based Web console with live logs.
+- Manage account sessions and proxy settings from the Web console.
+- Deploy locally, on a private server, or through Docker Compose with optional Caddy HTTPS reverse proxy.
+
+## Requirements
+
+- Python 3.8 or later. Python 3.12 is used by the Docker image.
+- Node.js 22 or later, only required when rebuilding the React Web console locally.
+- A valid X/Twitter login session Cookie containing at least `auth_token` and `ct0`.
+- Optional: Playwright Chromium, required for browser-login related workflows.
+
+Install Python dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-如果需要使用浏览器登录相关能力，还需要安装 Playwright 浏览器：
+Install Playwright browser runtime when needed:
 
 ```bash
 python -m playwright install
 ```
 
-## 线上部署
+## Quick Start
 
-仓库已经带好 Docker 发布文件，适合单机 Linux 公网部署。
+### Full Web Console
 
-```bash
-cp env.production.example .env.production
-# 修改 APP_HOST_PORT、TW_WEB_ADMIN_PASSWORD、TW_WEB_SESSION_SECRET
-docker compose --env-file .env.production up -d --build app
-```
+The full Web console is the recommended entry point for account management, proxy pools, task queues, runtime control, logs, reports and packaged downloads.
 
-部署后：
-
-- 应用容器内部监听 `8000`，默认通过宿主机 `18081` 对外访问，可用 `APP_HOST_PORT` 改成其它空闲端口。
-- 如需使用 Caddy 接管 HTTPS 和域名反代，先确认宿主机 `80/443` 没有被其它项目占用，再运行 `docker compose --profile caddy --env-file .env.production up -d --build`。
-- 数据持久化在 `./data`，包括 SQLite、任务文件和下载结果。
-- 公网模式下管理员可以使用浏览器登录；如需完全关闭该能力，可设置 `TW_WEB_ENABLE_BROWSER_LOGIN=0`，再手动录入 `auth_token` 和 `ct0`。
-
-## 推荐启动方式
-
-### 完整 Web 管理端
-
-推荐优先使用完整 Web 管理端，适合账号管理、代理池、任务队列、运行控制、结果汇报和打包下载。
-
-首次使用或前端代码更新后，先构建 React 管理端：
+Build the frontend after the first checkout or after frontend changes:
 
 ```bash
 cd frontend
@@ -65,136 +57,182 @@ npm run build
 cd ..
 ```
 
-然后启动后端：
+Start the backend:
 
 ```bash
 python web_app.py
 ```
 
-访问 `http://127.0.0.1:8000` 后，首页会显示“X 舆情采集看板”，包括任务总览、采集记录数、输出文件数、最近任务和任务模板。任务完成后，输出目录会生成 `summary_report.md`，用于快速说明采集目标、记录数、媒体数、互动指标和 Top 链接。
-
-账号池支持三种录入方式：
-
-- 手动填写 `auth_token` 和 `ct0`。
-- 点击“本地 Chrome 登录”，通过本机登录助手弹出临时 Chrome/Edge 窗口，完成 X 登录后自动保存会话。
-- 点击“从比特浏览器导入”，读取比特浏览器里已经登录 X 的环境 Cookie。
-
-使用本地 Chrome 登录前，请先在自己的电脑上启动助手：
-
-```powershell
-start_local_login_helper.bat
-```
-
-保持助手窗口打开后，回到账号池页面点击“本地 Chrome 登录”。线上工作台不能直接启动用户电脑上的 Chrome，也不能读取 `x.com` Cookie；本地助手只监听 `127.0.0.1:18765`，只把任务运行需要的 `auth_token` 和 `ct0` 回传给工作台。若使用自定义工作台域名，可通过 `TW_LOCAL_LOGIN_ALLOWED_HOSTS=your.domain.com` 增加允许域名；若 Chrome 不在默认路径，可设置 `TW_LOCAL_CHROME_PATH`。
-
-使用比特浏览器导入前，请先在比特浏览器里开启本地 API，并在比特浏览器设置中确认本地 API 地址，通常类似：
+Open:
 
 ```text
-http://127.0.0.1:54345
+http://127.0.0.1:8000
 ```
 
-然后确认要导入的浏览器环境已经登录 X/Twitter，在账号池页面填入本地 API 地址和窗口/Profile ID。多个 ID 可以每行一个或用英文逗号分隔；为了降低误操作风险，一次最多导入 10 个环境。导入过程只读取本机比特浏览器 API 返回的 `x.com` / `twitter.com` Cookie，并只保存任务运行需要的会话字段，不需要也不会接收 X 账号密码。
+The console provides task templates, recent task history, output statistics and generated `summary_report.md` files after task completion.
 
-请注意：本项目适合内部研究和授权账号下的数据整理。X/Twitter 存在官方 API、平台规则、速率限制、内容版权和隐私边界；生产化前建议迁移到官方 API，并单独确认授权、数据留存和合规要求。
+### Lightweight Local Panel
 
-### 轻量本地面板
-
-适合自己本机快速使用。
+Use the lightweight panel for quick local downloads on a personal machine:
 
 ```bash
 python panel_app.py
 ```
 
-启动后访问：
+Open:
 
 ```text
 http://127.0.0.1:7860
 ```
 
-面板支持填写用户名、Cookie、保存目录、日期范围、图片格式、并发数量、代理和常用下载选项。任务启动后可以在页面里查看运行状态、API 调用数、下载数量和实时日志。
+The panel supports username, Cookie, output directory, date range, image format, concurrency, proxy and common download options.
 
-默认管理员账号由环境变量控制：
+### Traditional Script Mode
 
-```text
-TW_WEB_ADMIN_USER=admin
-TW_WEB_ADMIN_PASSWORD=admin123
-```
-
-首次公开部署前请务必修改默认密码。本项目更推荐只在本机或可信内网运行。
-
-### 传统脚本方式
-
-如果只想按配置文件运行媒体下载：
+For configuration-file based media downloads:
 
 ```bash
 python main.py
 ```
 
-脚本会读取 `settings.json`。常用字段如下：
+The script reads `settings.json`. At minimum, configure `user_lst` and `cookie` before running.
 
-| 字段 | 说明 |
+## Web Console Accounts
+
+The Web console supports three account input methods:
+
+- Manually enter `auth_token` and `ct0`.
+- Use "Local Chrome Login" through the helper service on your own computer.
+- Import Cookies from BitBrowser local API when the selected browser profile has already logged in to X/Twitter.
+
+For local Chrome login, start the helper first:
+
+```powershell
+start_local_login_helper.bat
+```
+
+Keep the helper window open, then trigger the login flow from the account page. The helper listens on `127.0.0.1:18765` and only returns the session fields required by this project.
+
+If the Web console uses a custom domain, allow it with:
+
+```text
+TW_LOCAL_LOGIN_ALLOWED_HOSTS=your.domain.com
+```
+
+If Chrome is not installed in the default location, set:
+
+```text
+TW_LOCAL_CHROME_PATH=C:/Path/To/chrome.exe
+```
+
+For BitBrowser import, enable the local API in BitBrowser first. The local API is usually similar to:
+
+```text
+http://127.0.0.1:54345
+```
+
+Then enter the local API address and the browser profile ID in the account page. Multiple profile IDs can be separated by new lines or English commas. To reduce operational risk, each import is limited to 10 profiles.
+
+## Docker Deployment
+
+The repository includes Docker and Docker Compose files for single-machine deployment.
+
+Create the production environment file:
+
+```bash
+cp env.production.example .env.production
+```
+
+Edit at least these values before starting the service:
+
+```text
+APP_HOST_PORT=18081
+TW_WEB_ADMIN_PASSWORD=change-this-strong-password
+TW_WEB_SESSION_SECRET=replace-with-at-least-32-random-characters
+```
+
+Start the application:
+
+```bash
+docker compose --env-file .env.production up -d --build app
+```
+
+Deployment notes:
+
+- The container listens on `8000`.
+- The default host port is `18081`, configurable through `APP_HOST_PORT`.
+- Persistent data is stored in `./data`, including SQLite data, task files and downloaded results.
+- In public mode, the default admin password is rejected. Always set a strong `TW_WEB_ADMIN_PASSWORD`.
+- `TW_WEB_SESSION_SECRET` must be a random string of at least 32 characters in public mode.
+- To disable browser-login features completely, set `TW_WEB_ENABLE_BROWSER_LOGIN=0`.
+
+Optional Caddy HTTPS reverse proxy:
+
+```bash
+docker compose --profile caddy --env-file .env.production up -d --build
+```
+
+Before enabling Caddy, confirm that host ports `80` and `443` are available, and configure `DOMAIN` and `ACME_EMAIL` in `.env.production`.
+
+## Configuration
+
+`settings.json` controls the traditional script mode.
+
+| Field | Description |
 | --- | --- |
-| `save_path` | 保存目录，留空则保存到项目目录 |
-| `user_lst` | 用户名列表，多个用户用英文逗号分隔，不需要 `@` |
-| `cookie` | X/Twitter Cookie，必须包含 `auth_token` 和 `ct0` |
-| `time_range` | 时间范围，格式如 `2026-01-01:2026-05-25`；留空时默认最近一年至今天 |
-| `has_retweet` | 是否包含转推，开启后 API 消耗会明显增加 |
-| `high_lights` | 是否下载 Highlights 内容 |
-| `likes` | 是否下载 Likes 内容，仅适合本人账号可访问内容 |
-| `down_log` | 记录已下载内容，避免重复下载 |
-| `autoSync` | 根据本地已有内容自动同步新内容 |
-| `image_format` | 图片格式，可选 `orig`、`jpg`、`png` |
-| `has_video` | 是否下载视频和 GIF |
-| `max_concurrent_requests` | 并发数量，失败较多时建议调低 |
-| `proxy` | 代理地址，例如 `http://localhost:7890`、`socks5://user:pass@host:port` 或 `host:port:user:pass` |
-| `md_output` | 是否生成 Markdown 记录 |
+| `save_path` | Output directory. Leave empty to use the project directory. Use `/` in Windows paths. |
+| `user_lst` | Usernames to download, without `@`. Separate multiple users with English commas. |
+| `cookie` | X/Twitter Cookie. Must include `auth_token` and `ct0`. |
+| `time_range` | Date range, for example `2026-01-01:2026-05-25`. Empty value defaults to the most recent year. |
+| `has_retweet` | Include retweets. This may significantly increase API usage. |
+| `high_lights` | Download content from the Highlights tab. |
+| `likes` | Download content from the Likes tab when visible to the current account. |
+| `down_log` | Record downloaded items to reduce duplicate downloads. |
+| `autoSync` | Adjust the left side of the time range based on existing local content. |
+| `image_format` | Image format. Supported values: `orig`, `jpg`, `png`. |
+| `has_video` | Download videos and GIFs. |
+| `log_output` | Print download logs during script execution. |
+| `max_concurrent_requests` | Maximum concurrent requests. Lower it when failures increase. |
+| `proxy` | Proxy address. Supports HTTP, SOCKS5 and `host:port:user:pass` formats. |
+| `md_output` | Generate Markdown records. |
+| `media_count_limit` | Limit the number of media links in a single Markdown file. `0` means unlimited. |
 
-## 其他脚本入口
+## Script Entrypoints
 
-| 脚本 | 用途 |
+| Script | Purpose |
 | --- | --- |
-| `main.py` | 按用户名下载媒体内容 |
-| `tag_down.py` | 按 Tag 或高级搜索下载 |
-| `text_down.py` | 获取指定用户纯文本推文 |
-| `reply_down.py` | 下载指定用户或推文链接的评论区内容 |
-| `profile_down.py` | 获取用户主页资料 |
-| `panel_app.py` | 启动轻量本地面板 |
-| `web_app.py` | 启动完整 Web 管理端 |
+| `web_app.py` | Full Web console backend. |
+| `panel_app.py` | Lightweight local browser panel. |
+| `main.py` | Download media by username according to `settings.json`. |
+| `tag_down.py` | Download by tag, keyword or advanced search query. |
+| `text_down.py` | Export text-only tweets for specified users. |
+| `reply_down.py` | Download reply content for supported users or tweet links. |
+| `profile_down.py` | Fetch user profile information. |
 
-## 高级搜索说明
+## Advanced Search
 
-`tag_down.py` 可以配合 X 高级搜索使用。你可以在下面页面组装搜索条件：
+`tag_down.py` can work with X advanced search syntax. You can build a query from:
 
 ```text
 https://x.com/search-advanced
 ```
 
-复制搜索栏里的条件后，填入 `tag_down.py` 的 `_filter`。如果条件中包含英文双引号，建议改成英文单引号或做好转义，避免 Python 字符串解析错误。
+Copy the generated search query and set it as `_filter` in `tag_down.py`.
 
-常见用途：
+Common use cases:
 
-- 按关键词下载。
-- 按时间范围分批下载。
-- 指定或排除用户。
-- 指定语言。
-- 按互动量筛选。
-- 拆分大任务，降低失败概率和限流压力。
+- Download by keyword.
+- Split large tasks by date range.
+- Include or exclude specific users.
+- Filter by language.
+- Filter by engagement metrics.
+- Reduce rate-limit pressure by splitting large jobs into smaller tasks.
 
-## API 限流与稳定性
+If a query contains double quotes, replace them with single quotes or escape them correctly in the Python string.
 
-X/Twitter 接口会限制请求频率和每日调用量。如果程序出现类似 `Rate limit exceeded` 的提示，通常表示当前账号 API 调用次数暂时耗尽，需要等待恢复或减少任务规模。
+## Proxy Formats
 
-经验建议：
-
-- 不需要转推时关闭 `has_retweet`。
-- 大任务拆成多个小时间段执行。
-- 下载失败较多时降低 `max_concurrent_requests`。
-- Cookie 失效时重新获取 `auth_token` 和 `ct0`。
-- 使用代理时确认代理本身稳定可用。
-
-## 代理格式
-
-代理池和任务配置都支持以下格式：
+Task configuration and proxy pools support these formats:
 
 ```text
 http://127.0.0.1:7890
@@ -203,38 +241,57 @@ socks5://user:pass@gate.example.com:1000
 gate.example.com:1000:user:pass
 ```
 
-其中 `host:port:user:pass` 这种第三方代理常见格式会默认按 HTTP 代理处理，并在保存和运行前自动转换成 `http://user:pass@host:port`。如果供应商要求 SOCKS5，请填写完整的 `socks5://user:pass@host:port`。
+The `host:port:user:pass` format is treated as an HTTP proxy and converted to `http://user:pass@host:port` before use. Use a full `socks5://user:pass@host:port` URL when the provider requires SOCKS5.
 
-## 常见问题
+## Rate Limits and Reliability
 
-### Cookie 应该填什么？
+X/Twitter may limit API usage by account, endpoint, time window or behavior pattern. If the program reports `Rate limit exceeded`, the current account is likely temporarily limited.
 
-至少需要包含：
+Recommended mitigation:
+
+- Disable `has_retweet` when retweets are not required.
+- Split large jobs into smaller date ranges.
+- Reduce `max_concurrent_requests` when downloads fail frequently.
+- Refresh `auth_token` and `ct0` when the Cookie expires.
+- Verify proxy availability before running large tasks.
+- Use authorized accounts and avoid unnecessary repeated requests.
+
+## FAQ
+
+### Which Cookie fields are required?
+
+At minimum:
 
 ```text
-auth_token=你的值; ct0=你的值;
+auth_token=your-value; ct0=your-value;
 ```
 
-不要把示例里的 `xxxxxxxxxxx` 原样保留。Cookie 只建议在本机使用，不要提交到公开仓库。
+Do not commit real Cookies to a public repository. Treat Cookies as account credentials.
 
-### Windows 路径怎么写？
+### How should Windows paths be written?
 
-配置文件里建议使用 `/`：
+Use `/` in JSON values:
 
 ```text
 D:/Downloads/twitter
 ```
 
-不要在 JSON 里直接写未转义的反斜杠。
+Do not write unescaped backslashes directly in JSON strings.
 
-### 为什么下载变慢或失败？
+### Why do downloads become slow or fail?
 
-常见原因是账号限流、网络不稳定、代理异常、并发过高或目标内容权限不可见。先降低并发、缩小时间范围，再重新运行。
+Common causes include account rate limits, unstable network, invalid proxy, expired Cookie, high concurrency or content that is not visible to the current account. Start by lowering concurrency, reducing the date range and checking the account session.
 
-### 已下载的内容如何避免重复？
+### How are duplicate downloads avoided?
 
-开启 `down_log` 后，程序会记录已下载内容，减少重复下载。如果你想强制重新下载，需要关闭该选项，或删除对应目录下的 `cache_data.log`。
+Enable `down_log`. The program writes local download records and skips known items. To force a re-download, disable `down_log` or remove the corresponding `cache_data.log` file from the output directory.
 
-## 使用边界
+## Security and Compliance
 
-本项目是个人学习和本地管理工具，不提供任何规避平台限制的保证。下载到的图片、视频、文本等内容版权归内容创作者和平台所有。请勿用于商业采集、批量滥用、非法传播或侵犯他人权益的用途。因不当使用造成的账号风险、数据风险或法律责任，由使用者自行承担。
+- Do not expose the Web console to the public Internet with the default password.
+- Do not store real Cookies, proxy credentials or account secrets in version control.
+- Downloaded media, text and profile data may be protected by copyright, platform terms and privacy rules.
+- Confirm that you have the right to access, process, retain and distribute any collected data.
+- For production or commercial use, evaluate the official X API and complete a separate legal and compliance review.
+
+The user is solely responsible for account risk, data handling risk and legal consequences caused by improper use.
