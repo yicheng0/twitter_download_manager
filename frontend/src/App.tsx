@@ -1094,11 +1094,9 @@ function AccountsPage() {
   const [bitBrowserResults, setBitBrowserResults] = useState<BitBrowserImportResult[]>([]);
   const [error, setError] = useState('');
   const [browserLoginOpen, setBrowserLoginOpen] = useState(false);
+  const [browserLoginToken, setBrowserLoginToken] = useState('');
   const [browserLoginStatus, setBrowserLoginStatus] = useState('');
   const [browserLoginMessage, setBrowserLoginMessage] = useState('');
-  const [browserLoginMode, setBrowserLoginMode] = useState<'local' | 'remote' | null>(null);
-  const [browserInput, setBrowserInput] = useState('');
-  const [screenshotVersion, setScreenshotVersion] = useState(0);
   const addAccount = useMutation({
     mutationFn: () => api.addAccount(form),
     onSuccess: () => {
@@ -1124,41 +1122,61 @@ function AccountsPage() {
     onError: (err: Error) => setError(err.message),
   });
   const browserLogin = useMutation({
-    mutationFn: api.browserLogin,
+    mutationFn: async () => {
+      const session = await api.localBrowserLoginStart();
+      try {
+        const response = await fetch('http://127.0.0.1:18765/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            token: session.token,
+            callback_url: session.callback_url,
+            expires_in: session.expires_in,
+          }),
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          return {
+            ...session,
+            status: 'helper_missing',
+            message: body.message || '本地登录助手没有响应，请先启动助手后重试。',
+          };
+        }
+        return {
+          ...session,
+          status: 'running',
+          message: body.message || '已请求本地登录助手打开 Chrome，请在弹出的窗口完成 X 登录。',
+        };
+      } catch {
+        return {
+          ...session,
+          status: 'helper_missing',
+          message: '未检测到本地登录助手。请先双击 start_local_login_helper.bat，保持窗口打开后再重试。',
+        };
+      }
+    },
     onSuccess: (res) => {
       setError('');
       setBrowserLoginOpen(true);
+      setBrowserLoginToken(res.token);
       setBrowserLoginStatus(res.status);
       setBrowserLoginMessage(res.message);
-      setBrowserLoginMode(res.mode || 'remote');
-      if ((res.mode || 'remote') === 'remote') {
-        setScreenshotVersion((prev) => prev + 1);
-      }
     },
     onError: (err: Error) => setError(err.message),
   });
   const browserLoginStatusQuery = useQuery({
-    queryKey: ['browser-login-status', browserLoginOpen],
-    queryFn: api.browserLoginStatus,
-    enabled: browserLoginOpen,
+    queryKey: ['local-browser-login-status', browserLoginToken],
+    queryFn: () => api.localBrowserLoginStatus(browserLoginToken),
+    enabled: browserLoginOpen && Boolean(browserLoginToken) && !['helper_missing', 'completed', 'failed', 'expired', 'cancelled'].includes(browserLoginStatus),
     refetchInterval: browserLoginOpen ? 2500 : false,
   });
-  const sendBrowserInput = useMutation({
-    mutationFn: api.browserLoginInput,
-    onSuccess: () => {
-      setError('');
-      setScreenshotVersion((prev) => prev + 1);
-      queryClient.invalidateQueries({ queryKey: ['browser-login-status', browserLoginOpen] });
-    },
-    onError: (err: Error) => setError(err.message),
-  });
   const cancelBrowserLogin = useMutation({
-    mutationFn: api.browserLoginCancel,
+    mutationFn: () => (browserLoginToken ? api.localBrowserLoginCancel(browserLoginToken) : Promise.resolve({ ok: true })),
     onSuccess: () => {
       setBrowserLoginOpen(false);
+      setBrowserLoginToken('');
       setBrowserLoginStatus('');
       setBrowserLoginMessage('');
-      setBrowserLoginMode(null);
     },
     onError: (err: Error) => setError(err.message),
   });
@@ -1184,31 +1202,28 @@ function AccountsPage() {
     if (!status) return;
     setBrowserLoginStatus(status);
     setBrowserLoginMessage(browserLoginStatusQuery.data?.message || '');
-    setBrowserLoginMode(browserLoginStatusQuery.data?.mode || null);
     if (status === 'completed') {
-      setBrowserLoginOpen(false);
       queryClient.invalidateQueries({ queryKey: ['accounts'] });
-    }
-    if (status === 'running' && browserLoginStatusQuery.data?.mode !== 'local') {
-      setScreenshotVersion((prev) => prev + 1);
     }
   }, [browserLoginStatusQuery.data, queryClient]);
 
-  const clickRemoteBrowser = (event: React.MouseEvent<HTMLImageElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const scaleX = event.currentTarget.naturalWidth / rect.width;
-    const scaleY = event.currentTarget.naturalHeight / rect.height;
-    sendBrowserInput.mutate({
-      action: 'click',
-      x: Math.round((event.clientX - rect.left) * scaleX),
-      y: Math.round((event.clientY - rect.top) * scaleY),
-    });
-  };
+  const browserLoginTone = browserLoginStatus === 'completed'
+    ? 'success'
+    : ['failed', 'expired', 'helper_missing'].includes(browserLoginStatus)
+      ? 'danger'
+      : 'primary';
+  const browserLoginStatusText = {
+    pending: '等待助手',
+    running: '等待登录',
+    helper_missing: '助手未启动',
+    completed: '已完成',
+    failed: '失败',
+    expired: '已超时',
+    cancelled: '已取消',
+  }[browserLoginStatus] || 'starting';
 
-  const typeRemoteText = () => {
-    if (!browserInput) return;
-    sendBrowserInput.mutate({ action: 'type', text: browserInput });
-    setBrowserInput('');
+  const retryLocalHelper = () => {
+    browserLogin.mutate();
   };
 
   return (
@@ -1220,7 +1235,7 @@ function AccountsPage() {
       <ActionBar>
         <Button onClick={() => browserLogin.mutate()} disabled={browserLogin.isPending}>
           <CircleUserRound className="h-4 w-4" />
-          浏览器登录
+          本地 Chrome 登录
         </Button>
       </ActionBar>
       {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
@@ -1229,61 +1244,39 @@ function AccountsPage() {
           <CardHeader>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h3 className="font-semibold">浏览器登录</h3>
-                <p className="mt-1 text-sm text-[hsl(var(--muted))]">{browserLoginMessage || '请在远程浏览器中完成 X 登录'}</p>
+                <h3 className="font-semibold">本地 Chrome 授权登录</h3>
+                <p className="mt-1 text-sm text-[hsl(var(--muted))]">{browserLoginMessage || '请在本机 Chrome 授权窗口完成 X 登录'}</p>
               </div>
-              <Badge tone={browserLoginStatus === 'running' ? 'primary' : browserLoginStatus === 'completed' ? 'success' : 'warning'}>
-                {browserLoginStatus || 'starting'}
+              <Badge tone={browserLoginTone as BadgeTone}>
+                {browserLoginStatusText}
               </Badge>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
-            {browserLoginMode === 'local' ? (
-              <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-4 py-3 text-sm text-[hsl(var(--muted))]">
-                已在本机打开浏览器窗口。请在弹出的 Chrome/Chromium 中完成 X 登录，系统会自动检测 Cookie 并保存账号。
+            {browserLoginStatus === 'helper_missing' ? (
+              <div className="rounded-lg border border-[hsl(var(--warning))] bg-[rgba(251,191,36,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
+                请先在本机双击项目目录里的 start_local_login_helper.bat，看到“本地 Chrome 授权登录助手已启动”后再点击重试。
+              </div>
+            ) : browserLoginStatus === 'completed' ? (
+              <div className="rounded-lg border border-[hsl(var(--success))] bg-[rgba(34,197,94,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
+                登录成功，账号已保存到账号池。
+              </div>
+            ) : browserLoginStatus === 'failed' || browserLoginStatus === 'expired' ? (
+              <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-4 py-3 text-sm text-[hsl(var(--danger))]">
+                {browserLoginMessage || '本地 Chrome 授权登录没有成功，请重新开始。'}
               </div>
             ) : (
-              <>
-                <div className="overflow-auto rounded-lg border border-[hsl(var(--line))] bg-[#020617]">
-                  <img
-                    src={`/api/accounts/browser-login/screenshot?v=${screenshotVersion}`}
-                    alt="远程浏览器登录画面"
-                    className="mx-auto max-h-[620px] cursor-crosshair"
-                    onClick={clickRemoteBrowser}
-                  />
-                </div>
-                <div className="grid gap-2 md:grid-cols-[1fr_auto]">
-                  <Input
-                    value={browserInput}
-                    onChange={(event) => setBrowserInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault();
-                        typeRemoteText();
-                      }
-                    }}
-                    placeholder="输入后点击发送到远程浏览器"
-                  />
-                  <Button onClick={typeRemoteText} disabled={sendBrowserInput.isPending || !browserInput}>
-                    发送输入
-                  </Button>
-                </div>
-              </>
+              <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-4 py-3 text-sm text-[hsl(var(--muted))]">
+                本地助手会弹出一个临时 Chrome 授权窗口。请在窗口里完成 X 登录，工作台会自动检测并保存 Cookie。
+              </div>
             )}
             <div className="flex flex-wrap gap-2">
-              {browserLoginMode !== 'local' && (
-                <>
-                  {['Enter', 'Tab', 'Backspace', 'Escape'].map((key) => (
-                    <Button key={key} variant="secondary" size="sm" onClick={() => sendBrowserInput.mutate({ action: 'press', key })}>
-                      {key}
-                    </Button>
-                  ))}
-                  <Button variant="secondary" size="sm" onClick={() => sendBrowserInput.mutate({ action: 'reload' })}>
-                    刷新页面
-                  </Button>
-                </>
+              {browserLoginStatus === 'helper_missing' && (
+                <Button variant="secondary" size="sm" onClick={retryLocalHelper} disabled={browserLogin.isPending}>
+                  重试连接助手
+                </Button>
               )}
-              {browserLoginMode === 'local' && (
+              {browserLoginToken && browserLoginStatus !== 'helper_missing' && browserLoginStatus !== 'completed' && (
                 <Button variant="secondary" size="sm" onClick={() => browserLoginStatusQuery.refetch()}>
                   检查登录状态
                 </Button>

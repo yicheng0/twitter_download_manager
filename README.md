@@ -76,8 +76,16 @@ python web_app.py
 账号池支持三种录入方式：
 
 - 手动填写 `auth_token` 和 `ct0`。
-- 点击“浏览器登录”，在远程浏览器里完成 X 登录后自动保存会话。
+- 点击“本地 Chrome 登录”，通过本机登录助手弹出临时 Chrome/Edge 窗口，完成 X 登录后自动保存会话。
 - 点击“从比特浏览器导入”，读取比特浏览器里已经登录 X 的环境 Cookie。
+
+使用本地 Chrome 登录前，请先在自己的电脑上启动助手：
+
+```powershell
+start_local_login_helper.bat
+```
+
+保持助手窗口打开后，回到账号池页面点击“本地 Chrome 登录”。线上工作台不能直接启动用户电脑上的 Chrome，也不能读取 `x.com` Cookie；本地助手只监听 `127.0.0.1:18765`，只把任务运行需要的 `auth_token` 和 `ct0` 回传给工作台。若使用自定义工作台域名，可通过 `TW_LOCAL_LOGIN_ALLOWED_HOSTS=your.domain.com` 增加允许域名；若 Chrome 不在默认路径，可设置 `TW_LOCAL_CHROME_PATH`。
 
 使用比特浏览器导入前，请先在比特浏览器里开启本地 API，并在比特浏览器设置中确认本地 API 地址，通常类似：
 

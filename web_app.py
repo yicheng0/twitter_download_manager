@@ -73,6 +73,9 @@ stop_health_worker = False
 BROWSER_LOGIN_TIMEOUT_SECONDS = 300
 browser_login_lock = asyncio.Lock()
 browser_login_session = None
+LOCAL_BROWSER_LOGIN_TIMEOUT_SECONDS = 300
+local_browser_login_sessions = {}
+local_browser_login_lock = threading.Lock()
 
 
 def browser_login_available():
@@ -105,6 +108,36 @@ def local_chrome_executable():
         if candidate and Path(candidate).exists():
             return candidate
     return None
+
+
+def public_base_url(request: Request):
+    proto = request.headers.get('x-forwarded-proto') or request.url.scheme
+    host = request.headers.get('x-forwarded-host') or request.headers.get('host') or request.url.netloc
+    return f'{proto}://{host}'.rstrip('/')
+
+
+def cleanup_local_browser_login_sessions():
+    now_ts = time.time()
+    for token, session in list(local_browser_login_sessions.items()):
+        if now_ts > session['expires_at'] and session['status'] in {'pending', 'running'}:
+            session['status'] = 'expired'
+            session['message'] = '本地 Chrome 授权登录已超时，请重新开始。'
+        if now_ts - session['expires_at'] > 600:
+            local_browser_login_sessions.pop(token, None)
+
+
+def local_browser_login_payload(token):
+    cleanup_local_browser_login_sessions()
+    session = local_browser_login_sessions.get(token)
+    if not session:
+        raise HTTPException(status_code=404, detail='本地授权登录已不存在或已过期')
+    return {
+        'status': session['status'],
+        'message': session['message'],
+        'token': token,
+        'expires_in': max(0, int(session['expires_at'] - time.time())),
+        'screen_name': session.get('screen_name') or '',
+    }
 HEALTH_CHECK_INTERVAL = int(os.environ.get('TW_WEB_HEALTH_INTERVAL', '900') or 900)
 TASK_RETRY_DELAY_SECONDS = int(os.environ.get('TW_WEB_RETRY_DELAY_SECONDS', '30') or 30)
 health_state = {
@@ -2011,6 +2044,99 @@ async def api_add_account_manual(request: Request, user=Depends(require_api_admi
         raise HTTPException(status_code=400, detail='auth_token 和 ct0 都必填')
     save_account(label, auth_token, ct0)
     return {'ok': True}
+
+
+@app.post('/api/accounts/local-browser-login/start')
+async def api_local_browser_login_start(request: Request, user=Depends(require_api_admin)):
+    if not browser_login_available():
+        raise HTTPException(status_code=403, detail='浏览器登录已被 TW_WEB_ENABLE_BROWSER_LOGIN=0 禁用。')
+    token = secrets.token_urlsafe(32)
+    expires_at = time.time() + LOCAL_BROWSER_LOGIN_TIMEOUT_SECONDS
+    with local_browser_login_lock:
+        cleanup_local_browser_login_sessions()
+        local_browser_login_sessions[token] = {
+            'status': 'pending',
+            'message': '等待本地登录助手打开 Chrome。',
+            'created_at': time.time(),
+            'expires_at': expires_at,
+            'user_id': user['id'],
+        }
+    base_url = public_base_url(request)
+    return {
+        'status': 'pending',
+        'message': '请确认本地登录助手已启动。',
+        'token': token,
+        'expires_in': LOCAL_BROWSER_LOGIN_TIMEOUT_SECONDS,
+        'callback_url': f'{base_url}/api/accounts/local-browser-login/complete',
+    }
+
+
+@app.get('/api/accounts/local-browser-login/status')
+def api_local_browser_login_status(token: str, user=Depends(require_api_admin)):
+    with local_browser_login_lock:
+        payload = local_browser_login_payload(token)
+    return payload
+
+
+@app.post('/api/accounts/local-browser-login/cancel')
+async def api_local_browser_login_cancel(request: Request, user=Depends(require_api_admin)):
+    data = await request.json()
+    token = str(data.get('token') or '').strip()
+    if not token:
+        raise HTTPException(status_code=400, detail='token 不能为空')
+    with local_browser_login_lock:
+        session = local_browser_login_sessions.get(token)
+        if session:
+            session['status'] = 'cancelled'
+            session['message'] = '已取消本地 Chrome 授权登录。'
+    return {'ok': True}
+
+
+@app.post('/api/accounts/local-browser-login/complete')
+async def api_local_browser_login_complete(request: Request):
+    data = await request.json()
+    token = str(data.get('token') or '').strip()
+    auth_token = str(data.get('auth_token') or '').strip()
+    ct0 = str(data.get('ct0') or '').strip()
+    screen_name = str(data.get('screen_name') or '').strip()
+    error = str(data.get('error') or '').strip()
+    if not token:
+        raise HTTPException(status_code=400, detail='token 不能为空')
+    with local_browser_login_lock:
+        cleanup_local_browser_login_sessions()
+        session = local_browser_login_sessions.get(token)
+        if not session:
+            raise HTTPException(status_code=404, detail='本地授权登录已不存在或已过期')
+        if session.get('status') == 'cancelled':
+            raise HTTPException(status_code=409, detail='本地 Chrome 授权登录已取消')
+        if time.time() > session['expires_at']:
+            session['status'] = 'expired'
+            session['message'] = '本地 Chrome 授权登录已超时，请重新开始。'
+            raise HTTPException(status_code=410, detail=session['message'])
+        if error:
+            session['status'] = 'failed'
+            session['message'] = redact_sensitive(error)
+            return local_browser_login_payload(token)
+        if not auth_token or not ct0:
+            session['status'] = 'running'
+            session['message'] = '本地 Chrome 已打开，请完成 X 登录。'
+            return local_browser_login_payload(token)
+    cookie = f'auth_token={auth_token}; ct0={ct0};'
+    ok, checked_screen_name, validation_error = validate_account_cookie(cookie)
+    with local_browser_login_lock:
+        session = local_browser_login_sessions.get(token)
+        if not session:
+            raise HTTPException(status_code=404, detail='本地授权登录已不存在或已过期')
+        if not ok:
+            session['status'] = 'failed'
+            session['message'] = f'账号 Cookie 校验失败：{redact_sensitive(validation_error)}'
+            return local_browser_login_payload(token)
+        final_screen_name = checked_screen_name or screen_name
+        save_account(final_screen_name or 'Local Chrome Login', auth_token, ct0, final_screen_name)
+        session['status'] = 'completed'
+        session['message'] = '登录成功，账号已保存。'
+        session['screen_name'] = final_screen_name or ''
+        return local_browser_login_payload(token)
 
 
 @app.post('/api/accounts/browser-login')

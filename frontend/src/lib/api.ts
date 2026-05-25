@@ -1,12 +1,11 @@
 import type { Account, ApiError, BitBrowserImportResponse, Dashboard, HealthStatus, ProxyItem, RunConfig, RunStatus, Task } from './types';
 
-export type BrowserLoginMode = 'local' | 'remote' | null;
-
-export type BrowserLoginResponse = {
+export type LocalBrowserLoginResponse = {
   status: string;
   message: string;
-  mode?: BrowserLoginMode;
-  expires_in?: number;
+  token: string;
+  expires_in: number;
+  callback_url?: string;
   screen_name?: string;
 };
 
@@ -47,10 +46,9 @@ export const api = {
   accounts: () => request<{ accounts: Account[] }>('/api/accounts'),
   addAccount: (payload: Record<string, unknown>) => request<{ ok: boolean }>('/api/accounts/manual', { method: 'POST', body: JSON.stringify(payload) }),
   importBitBrowserAccounts: (payload: { base_url: string; browser_ids: string[] }) => request<BitBrowserImportResponse>('/api/accounts/import/bitbrowser', { method: 'POST', body: JSON.stringify(payload) }),
-  browserLogin: () => request<BrowserLoginResponse>('/api/accounts/browser-login/start', { method: 'POST' }),
-  browserLoginStatus: () => request<BrowserLoginResponse>('/api/accounts/browser-login/status'),
-  browserLoginInput: (payload: Record<string, unknown>) => request<{ ok: boolean }>('/api/accounts/browser-login/input', { method: 'POST', body: JSON.stringify(payload) }),
-  browserLoginCancel: () => request<{ ok: boolean }>('/api/accounts/browser-login/cancel', { method: 'POST' }),
+  localBrowserLoginStart: () => request<LocalBrowserLoginResponse>('/api/accounts/local-browser-login/start', { method: 'POST' }),
+  localBrowserLoginStatus: (token: string) => request<LocalBrowserLoginResponse>(`/api/accounts/local-browser-login/status?token=${encodeURIComponent(token)}`),
+  localBrowserLoginCancel: (token: string) => request<{ ok: boolean }>('/api/accounts/local-browser-login/cancel', { method: 'POST', body: JSON.stringify({ token }) }),
   checkAccount: (id: number) => request<{ account: Account; ok: boolean; error: string }>(`/api/accounts/${id}/check`, { method: 'POST' }),
   deleteAccount: (id: number) => request<{ ok: boolean }>(`/api/accounts/${id}`, { method: 'DELETE' }),
   proxies: () => request<{ proxies: ProxyItem[] }>('/api/proxies'),
