@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, AlertTriangle, ArrowRight, BarChart3, ChevronRight, CircleUserRound, Clock3, Copy, FileArchive, FolderKanban, Info, LogOut, Network, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BarChart3, ChevronRight, CircleUserRound, Clock3, FileArchive, FolderKanban, Info, LogOut, Network, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, Zap } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
@@ -8,7 +8,7 @@ import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
-import type { Account, Dashboard, ProxyItem, RunConfig, RunStatus, Task, TaskFormValues, TaskType } from './lib/types';
+import type { Account, ProxyItem, RunConfig, RunStatus, Task, TaskFormValues, TaskType } from './lib/types';
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
 
@@ -164,6 +164,10 @@ function timeRangeError(timeRange: string) {
   return '';
 }
 
+function presetFromTimeRange(timeRange: string): TimePreset {
+  return TIME_PRESETS.find((item) => rangeFromPreset(item.key) === timeRange)?.key || 'custom';
+}
+
 function Shell({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
   const { data: meData } = useQuery({ queryKey: ['me'], queryFn: () => api.me(), retry: false });
@@ -176,11 +180,11 @@ function Shell({ children }: { children: React.ReactNode }) {
   });
 
   return (
-    <div className="min-h-screen bg-[hsl(var(--bg))] text-[hsl(var(--text))]">
-      <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(205,214,226,0.94)] backdrop-blur">
+    <div className="min-h-screen bg-transparent text-[hsl(var(--text))]">
+      <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(9,18,33,0.88)] backdrop-blur">
         <div className="mx-auto flex min-h-16 max-w-[1440px] flex-wrap items-center gap-3 px-4 py-3">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#f8fafc_0%,#e8eef6_100%)] shadow-sm">
+            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#102033_0%,#0b1220_100%)] shadow-[0_10px_24px_rgba(14,165,233,0.14)]">
               <img src="/logo.svg" alt="X 采集工作台" className="h-9 w-9" />
             </div>
             <div>
@@ -222,7 +226,7 @@ function NavItem({ to, icon, label }: { to: string; icon: React.ReactNode; label
       className={({ isActive }) =>
         cn(
           'inline-flex min-h-10 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-[hsl(var(--muted))] transition hover:bg-[hsl(var(--panel-soft))] hover:text-[hsl(var(--text))]',
-          isActive && 'bg-[rgba(37,99,235,0.10)] text-[hsl(var(--primary-dark))]',
+          isActive && 'bg-[rgba(14,165,233,0.16)] text-[hsl(var(--primary-dark))]',
         )
       }
     >
@@ -247,19 +251,19 @@ function LoginPage() {
   });
 
   if (isLoading) {
-    return <div className="min-h-screen bg-[hsl(var(--bg))] px-4 py-8 text-sm text-[hsl(var(--muted))]">加载中...</div>;
+    return <div className="min-h-screen bg-transparent px-4 py-8 text-sm text-[hsl(var(--muted))]">加载中...</div>;
   }
   if (meData?.user) {
     return <Navigate to="/run" replace />;
   }
 
   return (
-    <div className="min-h-screen bg-[hsl(var(--bg))] px-4 py-8 text-[hsl(var(--text))]">
+    <div className="min-h-screen bg-transparent px-4 py-8 text-[hsl(var(--text))]">
       <div className="mx-auto flex min-h-[calc(100vh-4rem)] max-w-md items-center">
         <Card className="w-full">
           <CardHeader>
             <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#f8fafc_0%,#e8eef6_100%)] shadow-sm">
+              <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#102033_0%,#0b1220_100%)] shadow-[0_10px_24px_rgba(14,165,233,0.14)]">
                 <img src="/logo.svg" alt="X 采集工作台" className="h-9 w-9" />
               </div>
               <div>
@@ -276,7 +280,7 @@ function LoginPage() {
               <Input type="password" value={password} autoComplete="current-password" onChange={(event) => setPassword(event.target.value)} />
             </Field>
             {login.error && (
-              <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">
+              <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">
                 {(login.error as Error).message}
               </div>
             )}
@@ -294,7 +298,7 @@ function AuthenticatedApp() {
   const { data, isLoading, error } = useQuery({ queryKey: ['me'], queryFn: () => api.me(), retry: false });
 
   if (isLoading) {
-    return <div className="min-h-screen bg-[hsl(var(--bg))] px-4 py-8 text-sm text-[hsl(var(--muted))]">加载中...</div>;
+    return <div className="min-h-screen bg-transparent px-4 py-8 text-sm text-[hsl(var(--muted))]">加载中...</div>;
   }
   if (error || !data?.user) {
     return <Navigate to="/login" replace />;
@@ -318,7 +322,7 @@ function AuthenticatedApp() {
 
 function ActionBar({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center justify-end gap-2 rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#f8fafc_0%,hsl(var(--panel-soft))_100%)] px-4 py-3">
+    <div className="flex flex-wrap items-center justify-end gap-2 rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,rgba(30,41,59,0.92)_0%,rgba(15,23,42,0.92)_100%)] px-4 py-3">
       {children}
     </div>
   );
@@ -429,7 +433,7 @@ function DashboardPage() {
                 </div>
                 <div className="mt-1 text-[hsl(var(--muted))]">上次完成：{health?.last_finished_at || '-'}</div>
                 {health?.last_error && (
-                  <div className="mt-2 flex items-start gap-2 rounded-lg border border-[rgba(220,38,38,0.18)] bg-[rgba(220,38,38,0.06)] px-3 py-2 text-[hsl(var(--danger))]">
+                  <div className="mt-2 flex items-start gap-2 rounded-lg border border-[rgba(248,113,113,0.28)] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-[hsl(var(--danger))]">
                     <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
                     <span>{health.last_error}</span>
                   </div>
@@ -482,11 +486,11 @@ function TemplateCard({ template, onClick }: { template: TaskTemplate; onClick: 
     <button
       type="button"
       onClick={onClick}
-      className="group flex min-h-44 flex-col justify-between rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#f8fafc_0%,hsl(var(--panel-soft))_100%)] p-4 text-left transition-all duration-200 hover:-translate-y-[2px] hover:border-[hsl(var(--primary))] hover:shadow-[0_14px_30px_rgba(37,99,235,0.10)]"
+      className="group flex min-h-44 flex-col justify-between rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,rgba(30,41,59,0.88)_0%,rgba(15,23,42,0.9)_100%)] p-4 text-left transition-all duration-200 hover:-translate-y-[2px] hover:border-[hsl(var(--primary))] hover:shadow-[0_16px_34px_rgba(14,165,233,0.14)]"
     >
       <div>
         <div className="flex items-center gap-2">
-          <div className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-[rgba(37,99,235,0.12)] text-[hsl(var(--primary-dark))] transition-colors group-hover:bg-[rgba(37,99,235,0.16)]">
+          <div className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-[rgba(14,165,233,0.16)] text-[hsl(var(--primary-dark))] transition-colors group-hover:bg-[rgba(14,165,233,0.24)]">
             <ChevronRight className="h-4 w-4" />
           </div>
           <div className="text-base font-semibold text-[hsl(var(--text))]">{template.name}</div>
@@ -629,8 +633,9 @@ function validateRunForm(form: RunConfig, proxies: ProxyItem[]) {
   if (!users.length) {
     errors.push('用户名列表不能为空，多个用户名用英文逗号分隔。');
   }
-  if (!/^\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}$/.test(String(form.time_range || ''))) {
-    errors.push('时间范围格式应为 YYYY-MM-DD:YYYY-MM-DD。');
+  const timeError = timeRangeError(form.time_range);
+  if (timeError) {
+    errors.push(timeError);
   }
   if (!['orig', 'jpg', 'png'].includes(String(form.image_format || ''))) {
     errors.push('图片格式只能是 orig、jpg 或 png。');
@@ -721,6 +726,7 @@ function TaskFormPage() {
   const { data: accountData } = useQuery({ queryKey: ['accounts'], queryFn: () => api.accounts() });
   const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies() });
   const [searchParams] = useSearchParams();
+  const selectedTemplateId = searchParams.get('template');
   const accounts = accountData?.accounts;
   const proxies = proxiesData?.proxies || [];
   const usableProxies = proxies.filter((proxy) => proxy.enabled && proxy.status === 'active');
@@ -748,8 +754,7 @@ function TaskFormPage() {
   }, [accounts, form.account_id]);
 
   useEffect(() => {
-    const templateId = searchParams.get('template');
-    const template = getTaskTemplateById(templateId);
+    const template = getTaskTemplateById(selectedTemplateId);
     if (template) {
       setForm((prev) => ({ ...DEFAULT_TASK_FORM, ...prev, ...template.payload, task_type: template.payload.task_type || prev.task_type }));
       if (template.payload.time_range) {
@@ -757,7 +762,7 @@ function TaskFormPage() {
         setTimePreset(matchedPreset?.key || 'custom');
       }
     }
-  }, [searchParams]);
+  }, [selectedTemplateId]);
 
   const timeError = timeRangeError(form.time_range);
   const applyTimePreset = (preset: TimePreset) => {
@@ -785,7 +790,7 @@ function TaskFormPage() {
           取消
         </Button>
       </ActionBar>
-      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
+      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
 
       <Card>
         <CardHeader>
@@ -972,7 +977,7 @@ function TimeRangePicker({
           <Input type="date" value={end} onChange={(event) => onCustomChange(start, event.target.value)} />
         </Field>
       </div>
-      <div className={cn('rounded-lg border px-3 py-2 text-sm', error ? 'border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] text-[hsl(var(--danger))]' : 'border-[hsl(var(--line))] bg-[hsl(var(--panel))] text-[hsl(var(--muted))]')}>
+      <div className={cn('rounded-lg border px-3 py-2 text-sm', error ? 'border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] text-[hsl(var(--danger))]' : 'border-[hsl(var(--line))] bg-[hsl(var(--panel))] text-[hsl(var(--muted))]')}>
         {error || `实际范围：${value}`}
       </div>
     </div>
@@ -1091,7 +1096,7 @@ function TaskDetailPage({ id }: { id: number }) {
         <Card>
           <CardHeader><h3 className="font-semibold">日志</h3></CardHeader>
           <CardContent>
-            <pre className="max-h-[540px] overflow-auto whitespace-pre-wrap rounded-lg border border-[hsl(var(--line))] bg-[#0F172A] p-4 text-xs leading-6 text-slate-100">{task.log || '还没有日志'}</pre>
+            <pre className="max-h-[540px] overflow-auto whitespace-pre-wrap rounded-lg border border-[hsl(var(--line))] bg-[#020617] p-4 text-xs leading-6 text-slate-100">{task.log || '还没有日志'}</pre>
           </CardContent>
         </Card>
       </div>
@@ -1175,7 +1180,7 @@ function AccountsPage() {
           浏览器登录
         </Button>
       </ActionBar>
-      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
+      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
       <div className="grid gap-3 md:grid-cols-3">
         <InfoCard title="可用账号" value={String(accounts.filter((account) => account.status === 'active').length)} />
         <InfoCard title="失效账号" value={String(accounts.filter((account) => account.status !== 'active').length)} />
@@ -1221,7 +1226,7 @@ function AccountsPage() {
               </thead>
               <tbody>
                 {accounts.map((account) => (
-                  <tr key={account.id} className={cn('border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]', account.status !== 'active' && 'bg-[rgba(180,35,24,0.04)] text-[hsl(var(--muted))]')}>
+                  <tr key={account.id} className={cn('border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]', account.status !== 'active' && 'bg-[rgba(248,113,113,0.08)] text-[hsl(var(--muted))]')}>
                     <td className="px-4 py-3">#{account.id}</td>
                     <td className="px-4 py-3 font-medium">{account.label}</td>
                     <td className="px-4 py-3">{account.screen_name ? `@${account.screen_name}` : '-'}</td>
@@ -1313,7 +1318,7 @@ function ProxyPage() {
         <InfoCard title="失败次数" value={String(proxies.reduce((sum, proxy) => sum + (proxy.failure_count || 0), 0))} />
         <InfoCard title="最近检测" value={proxies[0]?.last_checked_at || '-'} />
       </div>
-      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
+      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
 
       <Card>
         <CardHeader>
@@ -1353,7 +1358,7 @@ function ProxyPage() {
               </thead>
               <tbody>
                 {proxies.map((proxy) => (
-                  <tr key={proxy.id} className={cn('border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]', (!proxy.enabled || proxy.status !== 'active') && 'bg-[rgba(15,23,42,0.04)] text-[hsl(var(--muted))]')}>
+                  <tr key={proxy.id} className={cn('border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]', (!proxy.enabled || proxy.status !== 'active') && 'bg-[rgba(148,163,184,0.08)] text-[hsl(var(--muted))]')}>
                     <td className="px-4 py-3">#{proxy.id}</td>
                     <td className="px-4 py-3 font-medium">{proxy.label}</td>
                     <td className="px-4 py-3 break-all">{proxy.proxy}</td>
@@ -1404,23 +1409,41 @@ function RunControlPage() {
   const { data: statusData } = useQuery({ queryKey: ['run-status'], queryFn: () => api.runStatus(), refetchInterval: 2000 });
   const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies(), refetchInterval: 8000 });
   const [searchParams] = useSearchParams();
+  const selectedTemplateId = searchParams.get('template');
   const proxies = proxiesData?.proxies || [];
   const usableProxies = proxies.filter((proxy) => proxy.enabled && proxy.status === 'active');
   const [preflightErrors, setPreflightErrors] = useState<string[]>([]);
   const [copyStatus, setCopyStatus] = useState('');
   const [form, setForm] = useState<RunConfig>(DEFAULT_RUN_FORM);
+  const [timePreset, setTimePreset] = useState<TimePreset>('all');
 
   useEffect(() => {
-    if (configData) setForm((prev) => ({ ...prev, ...configData }));
-  }, [configData]);
+    if (configData) {
+      const template = getTaskTemplateById(selectedTemplateId);
+      setForm((prev) => {
+        const savedConfig = { ...prev, ...configData };
+        if (!template?.runPayload) {
+          return savedConfig;
+        }
+        return {
+          ...DEFAULT_RUN_FORM,
+          ...savedConfig,
+          ...template.runPayload,
+          cookie: savedConfig.cookie || '',
+          save_path: savedConfig.save_path || '',
+        };
+      });
+      setTimePreset(presetFromTimeRange(template?.runPayload?.time_range || configData.time_range));
+    }
+  }, [configData, selectedTemplateId]);
 
   useEffect(() => {
-    const templateId = searchParams.get('template');
-    const template = getTaskTemplateById(templateId);
+    const template = getTaskTemplateById(selectedTemplateId);
     if (template?.runPayload) {
       setForm((prev) => ({ ...DEFAULT_RUN_FORM, ...prev, ...template.runPayload, cookie: prev.cookie || '', save_path: prev.save_path || '' }));
+      setTimePreset(presetFromTimeRange(template.runPayload.time_range || DEFAULT_RUN_FORM.time_range));
     }
-  }, [searchParams]);
+  }, [selectedTemplateId]);
 
   const start = useMutation({
     mutationFn: () => api.runStart({ ...form, proxy_id: form.proxy_id ?? undefined }),
@@ -1452,6 +1475,17 @@ function RunControlPage() {
     setPreflightErrors(errors);
     if (errors.length) return;
     start.mutate();
+  };
+  const timeError = timeRangeError(form.time_range);
+  const applyTimePreset = (preset: TimePreset) => {
+    setTimePreset(preset);
+    setPreflightErrors([]);
+    setForm((prev) => ({ ...prev, time_range: rangeFromPreset(preset) }));
+  };
+  const applyCustomTimeRange = (start: string, end: string) => {
+    setTimePreset('custom');
+    setPreflightErrors([]);
+    setForm((prev) => ({ ...prev, time_range: `${start}:${end}` }));
   };
 
   return (
@@ -1492,8 +1526,12 @@ function RunControlPage() {
               <button
                 key={template.id}
                 type="button"
-                className="group flex min-h-36 flex-col justify-between rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#f8fafc_0%,hsl(var(--panel-soft))_100%)] p-4 text-left transition-all duration-200 hover:-translate-y-[2px] hover:border-[hsl(var(--primary))] hover:shadow-[0_14px_30px_rgba(37,99,235,0.10)]"
-                onClick={() => setForm((prev) => ({ ...DEFAULT_RUN_FORM, ...prev, ...template.runPayload, cookie: prev.cookie || '' }))}
+                className="group flex min-h-36 flex-col justify-between rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,rgba(30,41,59,0.88)_0%,rgba(15,23,42,0.9)_100%)] p-4 text-left transition-all duration-200 hover:-translate-y-[2px] hover:border-[hsl(var(--primary))] hover:shadow-[0_16px_34px_rgba(14,165,233,0.14)]"
+                onClick={() => {
+                  setForm((prev) => ({ ...DEFAULT_RUN_FORM, ...prev, ...template.runPayload, cookie: prev.cookie || '', save_path: prev.save_path || '' }));
+                  setTimePreset(presetFromTimeRange(template.runPayload.time_range || DEFAULT_RUN_FORM.time_range));
+                  setPreflightErrors([]);
+                }}
               >
                 <div>
                   <div className="text-base font-semibold">{template.name}</div>
@@ -1513,7 +1551,7 @@ function RunControlPage() {
       </Card>
 
       {preflightErrors.length > 0 && (
-        <div className="rounded-lg border border-[hsl(var(--warning))] bg-[rgba(245,158,11,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
+        <div className="rounded-lg border border-[hsl(var(--warning))] bg-[rgba(251,191,36,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
           <div className="font-semibold">启动前请先处理：</div>
           <ul className="mt-2 list-disc space-y-1 pl-5">
             {preflightErrors.map((error) => <li key={error}>{error}</li>)}
@@ -1522,7 +1560,7 @@ function RunControlPage() {
       )}
 
       {(start.error || stop.error) && (
-        <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(220,38,38,0.08)] px-3 py-2 text-sm text-[hsl(var(--danger))]">
+        <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">
           操作没有成功：{(start.error as Error | null)?.message || (stop.error as Error | null)?.message}
         </div>
       )}
@@ -1564,7 +1602,16 @@ function RunControlPage() {
                 ))}
               </select>
             </Field>
-            <Field label="时间范围"><Input value={form.time_range} onChange={(e) => setForm((prev) => ({ ...prev, time_range: e.target.value }))} /></Field>
+            <div className="grid gap-2 text-sm font-medium">
+              <span>时间范围</span>
+              <TimeRangePicker
+                value={form.time_range}
+                preset={timePreset}
+                error={timeError}
+                onPresetChange={applyTimePreset}
+                onCustomChange={applyCustomTimeRange}
+              />
+            </div>
             <Field label="并发数"><Input type="number" value={form.max_concurrent_requests} onChange={(e) => setForm((prev) => ({ ...prev, max_concurrent_requests: Number(e.target.value) }))} /></Field>
             <div className="grid gap-3 sm:grid-cols-2">
               <Check label="包含转推" checked={form.has_retweet} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_retweet: checked }))} />
@@ -1580,7 +1627,7 @@ function RunControlPage() {
         <Card>
           <CardHeader><h3 className="font-semibold">日志</h3></CardHeader>
           <CardContent>
-              <div className="max-h-[640px] overflow-auto rounded-lg border border-[hsl(var(--line))] bg-[#0F172A] p-4 text-xs leading-6 text-slate-100">
+              <div className="max-h-[640px] overflow-auto rounded-lg border border-[hsl(var(--line))] bg-[#020617] p-4 text-xs leading-6 text-slate-100">
                 {status.logs.length ? status.logs.map((line, index) => <div key={`${index}-${line}`}>{line}</div>) : '还没有日志'}
               </div>
           </CardContent>

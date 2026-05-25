@@ -3,19 +3,19 @@
 @tailwind utilities;
 
 :root {
-  color-scheme: light;
-  --bg: 214 22% 87%;
-  --panel: 210 24% 97%;
-  --panel-soft: 214 24% 88%;
-  --text: 216 32% 15%;
-  --muted: 216 16% 34%;
-  --line: 214 18% 74%;
-  --primary: 216 62% 42%;
-  --primary-dark: 218 64% 31%;
+  color-scheme: dark;
+  --bg: 222 47% 7%;
+  --panel: 222 33% 12%;
+  --panel-soft: 221 30% 17%;
+  --text: 210 40% 96%;
+  --muted: 215 18% 72%;
+  --line: 216 28% 24%;
+  --primary: 199 89% 56%;
+  --primary-dark: 213 94% 68%;
   --accent: 39 78% 46%;
-  --danger: 0 72% 51%;
-  --success: 142 71% 36%;
-  --warning: 38 92% 50%;
+  --danger: 0 84% 66%;
+  --success: 142 70% 52%;
+  --warning: 38 92% 60%;
 }
 
 * {
@@ -30,7 +30,9 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    linear-gradient(180deg, hsl(214 24% 84%) 0%, hsl(var(--bg)) 44%, hsl(214 20% 85%) 100%);
+    radial-gradient(circle at 18% 0%, rgba(14, 165, 233, 0.18) 0, rgba(14, 165, 233, 0) 32rem),
+    radial-gradient(circle at 86% 8%, rgba(37, 99, 235, 0.16) 0, rgba(37, 99, 235, 0) 30rem),
+    linear-gradient(180deg, hsl(222 48% 9%) 0%, hsl(var(--bg)) 48%, hsl(224 48% 6%) 100%);
   color: hsl(var(--text));
   font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
   font-size: 16px;
@@ -43,10 +45,10 @@ a {
 }
 
 .panel-surface {
-  background: hsl(var(--panel));
+  background: rgba(15, 23, 42, 0.86);
   border: 1px solid hsl(var(--line));
   border-radius: 8px;
-  box-shadow: 0 12px 28px rgba(20, 34, 52, 0.1);
+  box-shadow: 0 18px 42px rgba(2, 8, 23, 0.34);
 }
 
 .panel-soft {

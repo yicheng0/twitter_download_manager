@@ -6,7 +6,7 @@
   --text: #172033;
   --muted: #4b5b70;
   --line: #b9c5d3;
-  --primary: #2563eb;
+  --primary: #0e74be;
   --primary-dark: #1d4ed8;
   --accent: #ea580c;
   --danger: #b42318;
@@ -20,7 +20,7 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: linear-gradient(180deg, #d4dde8 0%, var(--bg) 44%, #dbe3ec 100%);
+  background: linear-gradient(180deg, #eff5fb 0%, var(--bg) 52%, #dbe3ec 100%);
   color: var(--text);
   font-family: "Segoe UI", "Microsoft YaHei", Arial, sans-serif;
   font-size: 16px;
@@ -79,7 +79,7 @@ h2 {
   padding: 0 16px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(248, 250, 252, 0.86);
+  background: rgba(248, 250, 252, 0.9);
   color: var(--muted);
   font-weight: 700;
 }
@@ -179,7 +179,7 @@ select:focus-visible,
 button:focus-visible,
 pre:focus-visible {
   border-color: var(--primary);
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  box-shadow: 0 0 0 3px rgba(14, 116, 190, 0.18);
 }
 
 .switch-grid {
