@@ -93,6 +93,11 @@ ACCOUNT_TRANSIENT_COOLDOWN_SECONDS = 30 * 60
 PROXY_MIN_INTERVAL_SECONDS = 3 * 60
 PROXY_FAILURE_COOLDOWN_SECONDS = 30 * 60
 PROXY_RATE_LIMIT_COOLDOWN_SECONDS = 2 * 60 * 60
+SERVER_TIMEZONE = os.environ.get('TW_WEB_TIMEZONE', time.tzname[0] if time.tzname else 'local')
+OPERATION_LOG_RETENTION_DAYS = max(1, int(os.environ.get('TW_OPERATION_LOG_RETENTION_DAYS', '90') or 90))
+SCHEDULE_FAILURE_DISABLE_THRESHOLD = max(1, int(os.environ.get('TW_SCHEDULE_FAILURE_DISABLE_THRESHOLD', '3') or 3))
+SCHEDULE_MISSED_RUN_POLICY = 'skip'
+SCHEDULE_FAILURE_POLICY = 'disable_after_3_failures'
 
 
 def browser_login_available():
@@ -204,6 +209,200 @@ def db():
 
 def now():
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+def schema_version(conn):
+    row = conn.execute("select value from app_meta where key = 'schema_version'").fetchone()
+    try:
+        return int(row['value']) if row else 0
+    except Exception:
+        return 0
+
+
+def set_schema_version(conn, version):
+    conn.execute(
+        "insert into app_meta (key, value) values ('schema_version', ?) on conflict(key) do update set value = excluded.value",
+        (str(version),),
+    )
+
+
+def ensure_schema_table(conn):
+    conn.execute(
+        '''
+        create table if not exists app_meta (
+            key text primary key,
+            value text not null
+        )
+        '''
+    )
+
+
+def apply_schema_migrations():
+    with db() as conn:
+        ensure_schema_table(conn)
+        current = schema_version(conn)
+        migrations = [
+            (1, migration_baseline_schema),
+            (2, migration_scheduler_and_logs),
+            (3, migration_runtime_indexes),
+        ]
+        for version, migration in migrations:
+            if current >= version:
+                continue
+            migration(conn)
+            set_schema_version(conn, version)
+
+
+def migration_baseline_schema(conn):
+    conn.executescript(
+        '''
+        create table if not exists users (
+            id integer primary key autoincrement,
+            username text unique not null,
+            password_hash text not null,
+            role text not null default 'user',
+            created_at text not null
+        );
+        create table if not exists accounts (
+            id integer primary key autoincrement,
+            label text not null,
+            auth_token text not null,
+            ct0 text not null,
+            cookie text not null,
+            screen_name text,
+            status text not null default 'active',
+            last_checked_at text,
+            created_at text not null
+        );
+        create table if not exists proxies (
+            id integer primary key autoincrement,
+            label text not null,
+            proxy text not null,
+            enabled integer not null default 1,
+            status text not null default 'active',
+            last_checked_at text,
+            last_error text,
+            created_at text not null
+        );
+        create table if not exists tasks (
+            id integer primary key autoincrement,
+            user_id integer not null,
+            account_id integer,
+            task_type text not null,
+            title text not null,
+            config_json text not null,
+            status text not null,
+            output_dir text not null,
+            log_path text not null,
+            error text,
+            created_at text not null,
+            started_at text,
+            finished_at text,
+            process_id integer
+        );
+        create table if not exists result_db_configs (
+            id integer primary key autoincrement,
+            label text not null,
+            db_type text not null,
+            host text not null,
+            port integer not null,
+            database_name text not null,
+            username text not null,
+            encrypted_password text,
+            ssl_enabled integer not null default 0,
+            enabled integer not null default 0,
+            status text not null default 'untested',
+            last_tested_at text,
+            last_synced_at text,
+            last_error text,
+            created_at text not null,
+            updated_at text not null
+        );
+        '''
+    )
+    ensure_column(conn, 'accounts', 'last_error', 'text')
+    ensure_column(conn, 'proxies', 'detected_ip', 'text')
+    ensure_column(conn, 'proxies', 'failure_count', 'integer not null default 0')
+    ensure_column(conn, 'accounts', 'success_count', 'integer not null default 0')
+    ensure_column(conn, 'accounts', 'failure_count', 'integer not null default 0')
+    ensure_column(conn, 'accounts', 'task_count', 'integer not null default 0')
+    ensure_column(conn, 'accounts', 'last_used_at', 'text')
+    ensure_column(conn, 'accounts', 'cooldown_until', 'text')
+    ensure_column(conn, 'accounts', 'tier', "text not null default 'new'")
+    ensure_column(conn, 'proxies', 'success_count', 'integer not null default 0')
+    ensure_column(conn, 'proxies', 'last_used_at', 'text')
+    ensure_column(conn, 'proxies', 'cooldown_until', 'text')
+    ensure_column(conn, 'tasks', 'retry_count', 'integer not null default 0')
+    ensure_column(conn, 'tasks', 'max_retries', 'integer not null default 2')
+    ensure_column(conn, 'tasks', 'last_retry_at', 'text')
+    ensure_column(conn, 'tasks', 'last_error_type', 'text')
+    ensure_column(conn, 'tasks', 'proxy_id', 'integer')
+    ensure_column(conn, 'tasks', 'resource_mode', "text not null default 'manual'")
+    ensure_column(conn, 'tasks', 'schedule_id', 'integer')
+    ensure_column(conn, 'tasks', 'locked_by', 'text')
+    ensure_column(conn, 'tasks', 'locked_at', 'text')
+    ensure_column(conn, 'tasks', 'heartbeat_at', 'text')
+    ensure_column(conn, 'tasks', 'progress_total', 'integer not null default 0')
+    ensure_column(conn, 'tasks', 'progress_done', 'integer not null default 0')
+    ensure_column(conn, 'tasks', 'api_calls', 'integer not null default 0')
+    ensure_column(conn, 'tasks', 'download_count', 'integer not null default 0')
+    ensure_column(conn, 'result_db_configs', 'last_synced_at', 'text')
+
+
+def migration_scheduler_and_logs(conn):
+    conn.executescript(
+        '''
+        create table if not exists scheduled_tasks (
+            id integer primary key autoincrement,
+            user_id integer not null,
+            account_id integer not null,
+            name text not null,
+            enabled integer not null default 1,
+            schedule_type text not null,
+            run_time text not null,
+            weekdays text,
+            config_json text not null,
+            next_run_at text,
+            last_run_at text,
+            last_task_id integer,
+            created_at text not null,
+            updated_at text not null
+        );
+        create table if not exists operation_logs (
+            id integer primary key autoincrement,
+            created_at text not null,
+            level text not null,
+            event_type text not null,
+            task_id integer,
+            schedule_id integer,
+            error_type text,
+            message text not null,
+            details_json text
+        );
+        '''
+    )
+    ensure_column(conn, 'scheduled_tasks', 'proxy_id', 'integer')
+    ensure_column(conn, 'scheduled_tasks', 'timezone', "text not null default 'local'")
+    ensure_column(conn, 'scheduled_tasks', 'missed_run_policy', "text not null default 'skip'")
+    ensure_column(conn, 'scheduled_tasks', 'failure_policy', "text not null default 'disable_after_3_failures'")
+    ensure_column(conn, 'scheduled_tasks', 'consecutive_failures', 'integer not null default 0')
+    ensure_column(conn, 'scheduled_tasks', 'last_error', 'text')
+    ensure_column(conn, 'operation_logs', 'task_id', 'integer')
+    ensure_column(conn, 'operation_logs', 'schedule_id', 'integer')
+    ensure_column(conn, 'operation_logs', 'error_type', 'text')
+
+
+def migration_runtime_indexes(conn):
+    conn.execute('create index if not exists idx_tasks_queue on tasks(status, last_retry_at, id)')
+    conn.execute('create index if not exists idx_tasks_lease on tasks(status, heartbeat_at)')
+    conn.execute('create index if not exists idx_task_items_task on task_items(task_id)')
+    conn.execute('create index if not exists idx_media_assets_task on media_assets(task_id)')
+    conn.execute('create index if not exists idx_media_assets_url on media_assets(media_url)')
+    conn.execute('create index if not exists idx_operation_logs_created_at on operation_logs(created_at desc)')
+    conn.execute('create index if not exists idx_operation_logs_level on operation_logs(level, created_at desc)')
+    conn.execute('create index if not exists idx_operation_logs_event on operation_logs(event_type, created_at desc)')
+    conn.execute('create index if not exists idx_operation_logs_task on operation_logs(task_id, created_at desc)')
+    conn.execute('create index if not exists idx_operation_logs_schedule on operation_logs(schedule_id, created_at desc)')
 
 
 def seconds_from_now(seconds):
