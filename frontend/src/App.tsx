@@ -233,6 +233,7 @@ function Shell({ children }: { children: React.ReactNode }) {
             collapsed={sidebarCollapsed}
             userName={meData?.user?.username}
             logoutPending={logout.isPending}
+            onToggleCollapse={() => setSidebarCollapsed((value) => !value)}
             onLogout={() => logout.mutate()}
           />
         </aside>
@@ -258,36 +259,11 @@ function Shell({ children }: { children: React.ReactNode }) {
         )}
 
         <div className="min-w-0 flex-1">
-          <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(9,18,33,0.86)] backdrop-blur">
+          <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(9,18,33,0.86)] backdrop-blur lg:hidden">
             <div className="mx-auto flex min-h-16 max-w-[1440px] items-center gap-3 px-4 py-3">
               <Button variant="ghost" size="sm" className="h-10 w-10 px-0 lg:hidden" aria-label="打开导航菜单" onClick={() => setMobileNavOpen(true)}>
                 <Menu className="h-4 w-4" />
               </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="hidden h-10 w-10 px-0 lg:inline-flex"
-                aria-label={sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
-                onClick={() => setSidebarCollapsed((value) => !value)}
-              >
-                {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-              </Button>
-              <div className="min-w-0">
-                <div className="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--primary-dark))]">采样工作台</div>
-                <div className="truncate text-lg font-semibold leading-tight">X 采集工作台</div>
-              </div>
-              <div className="ml-auto flex items-center gap-2">
-            {meData?.user && (
-              <div className="hidden items-center gap-2 text-sm text-[hsl(var(--muted))] sm:flex">
-                <CircleUserRound className="h-4 w-4" />
-                {meData.user.username}
-              </div>
-            )}
-            <Button variant="secondary" size="sm" onClick={() => logout.mutate()} disabled={logout.isPending}>
-              <LogOut className="h-4 w-4" />
-              退出
-            </Button>
-          </div>
             </div>
           </header>
           <main className="mx-auto max-w-[1440px] px-4 py-5">{children}</main>
@@ -313,11 +289,23 @@ function BrandMark({ collapsed }: { collapsed: boolean }) {
   );
 }
 
-function SidebarContent({ collapsed, userName, logoutPending, onLogout }: { collapsed: boolean; userName?: string; logoutPending: boolean; onLogout: () => void }) {
+function SidebarContent({ collapsed, userName, logoutPending, onToggleCollapse, onLogout }: { collapsed: boolean; userName?: string; logoutPending: boolean; onToggleCollapse: () => void; onLogout: () => void }) {
   return (
     <>
-      <div className="flex min-h-16 items-center border-b border-[hsl(var(--line))] px-4">
+      <div className={cn(
+        'flex min-h-16 items-center border-b border-[hsl(var(--line))] px-4',
+        collapsed ? 'justify-center' : 'justify-between gap-3',
+      )}>
         <BrandMark collapsed={collapsed} />
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-10 w-10 shrink-0 px-0"
+          aria-label={collapsed ? '展开侧边栏' : '折叠侧边栏'}
+          onClick={onToggleCollapse}
+        >
+          {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+        </Button>
       </div>
       <SidebarNav collapsed={collapsed} />
       <div className="mt-auto border-t border-[hsl(var(--line))] p-3">
