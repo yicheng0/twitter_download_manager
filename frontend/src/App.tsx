@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, AlertTriangle, ArrowRight, BarChart3, ChevronRight, CircleUserRound, Clock3, Eye, FileArchive, FolderKanban, Info, LogOut, Network, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronRight, CircleUserRound, ClipboardList, Clock3, Eye, FileArchive, FolderKanban, Info, LogOut, Network, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, Zap } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
@@ -8,7 +8,7 @@ import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
-import type { Account, BitBrowserImportResult, ProxyItem, RunConfig, RunStatus, Task, TaskFormValues, TaskPreview, TaskType } from './lib/types';
+import type { Account, BitBrowserImportResult, DashboardTask, OperationLog, ProxyItem, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskType } from './lib/types';
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
 import { defaultRunTimeRange, defaultTaskTimeRange, presetFromTimeRange, rangeFromPreset, splitTimeRange, timeRangeError, TIME_PRESETS, todayString, type TimePreset } from './lib/timeRange';
@@ -66,7 +66,37 @@ const DEFAULT_RUN_FORM: RunConfig = {
   media_count_limit: 350,
 };
 
+const DEFAULT_SCHEDULE_FORM: ScheduleFormValues = {
+  name: '每日博主采集',
+  account_id: 0,
+  proxy_id: null,
+  task_type: 'benchmark_account',
+  targets: '',
+  schedule_type: 'daily',
+  run_time: '09:00',
+  weekdays: [1, 2, 3, 4, 5],
+  time_range: rangeFromPreset('7d'),
+  max_concurrent_requests: 8,
+  tweet_limit: 10,
+  has_video: true,
+  has_retweet: false,
+  down_log: true,
+  md_output: false,
+  image_format: 'orig',
+  media_count_limit: 350,
+  proxy: '',
+};
+
 const PROXY_PLACEHOLDER = 'gate.kookeey.info:1000:user:pass 或 socks5://user:pass@host:port';
+const WEEKDAYS = [
+  { value: 1, label: '周一' },
+  { value: 2, label: '周二' },
+  { value: 3, label: '周三' },
+  { value: 4, label: '周四' },
+  { value: 5, label: '周五' },
+  { value: 6, label: '周六' },
+  { value: 7, label: '周日' },
+];
 
 function statusTone(status: string): BadgeTone {
   if (status === 'completed' || status === 'active' || status === 'finished') return 'success';
@@ -98,6 +128,8 @@ function statusLabel(status: string) {
     idle: '空闲',
     stopping: '停止中',
     stopped: '已停止',
+    new: '新号保护',
+    stable: '稳定',
   }[status] || status;
 }
 
@@ -124,6 +156,20 @@ function statusDescription(status: string) {
     stopping: '正在停止当前任务。',
     stopped: '任务已停止。',
   }[status] || '';
+}
+
+function levelTone(level: string): BadgeTone {
+  if (level === 'error') return 'danger';
+  if (level === 'warning') return 'warning';
+  return 'primary';
+}
+
+function levelLabel(level: string) {
+  return {
+    info: '信息',
+    warning: '警告',
+    error: '错误',
+  }[level] || level;
 }
 
 function displayStatus(status: string) {
@@ -159,6 +205,8 @@ function Shell({ children }: { children: React.ReactNode }) {
             <NavItem to="/run" icon={<Activity className="h-4 w-4" />} label="运行控制" />
             <NavItem to="/tasks" icon={<FolderKanban className="h-4 w-4" />} label="任务" />
             <NavItem to="/tasks/new" icon={<Plus className="h-4 w-4" />} label="新建任务" />
+            <NavItem to="/schedules" icon={<CalendarClock className="h-4 w-4" />} label="定时任务" />
+            <NavItem to="/operation-logs" icon={<ClipboardList className="h-4 w-4" />} label="运维日志" />
             <NavItem to="/accounts" icon={<ShieldCheck className="h-4 w-4" />} label="账号" />
             <NavItem to="/proxies" icon={<Network className="h-4 w-4" />} label="代理" />
           </nav>
@@ -274,6 +322,8 @@ function AuthenticatedApp() {
         <Route path="/tasks" element={<TaskListPage />} />
         <Route path="/tasks/new" element={<TaskFormPage />} />
         <Route path="/tasks/:id" element={<TaskDetailRoute />} />
+        <Route path="/schedules" element={<SchedulesPage />} />
+        <Route path="/operation-logs" element={<OperationLogsPage />} />
         <Route path="/accounts" element={<AccountsPage />} />
         <Route path="/proxies" element={<ProxyPage />} />
         <Route path="*" element={<Navigate to="/run" replace />} />
@@ -298,38 +348,74 @@ function DashboardPage() {
   if (isLoading && !dashboard) return <div className="text-sm text-[hsl(var(--muted))]">加载中...</div>;
   if (!dashboard) return <div>看板数据暂不可用</div>;
 
+  const activeTasks = dashboard.active_tasks || dashboard.recent_tasks.filter((task) => task.status === 'running' || task.status === 'queued').slice(0, 5);
+  const attentionTasks = dashboard.attention_tasks || dashboard.recent_tasks.filter((task) => statusTone(task.status) === 'danger' || task.status === 'partial_failed').slice(0, 5);
+  const recentOutputs = dashboard.recent_outputs || dashboard.recent_tasks.filter((task) => task.status === 'completed').slice(0, 6);
+  const resourceAccounts = dashboard.resources?.accounts;
+  const resourceProxies = dashboard.resources?.proxies;
+  const accountUsable = resourceAccounts?.usable ?? ((health?.accounts?.active ?? 0) + (health?.accounts?.unknown ?? 0) + (health?.accounts?.check_failed ?? 0));
+  const accountIssues = (resourceAccounts?.expired ?? health?.accounts?.expired ?? 0) + (resourceAccounts?.cooling ?? 0) + (resourceAccounts?.warning ?? 0);
+  const proxyUsable = resourceProxies?.usable ?? (health?.proxies?.active ?? 0);
+  const proxyIssues = (resourceProxies?.disabled ?? health?.proxies?.disabled ?? 0) + (resourceProxies?.cooling ?? 0) + (resourceProxies?.warning ?? 0);
+  const queueCount = dashboard.status_counts?.queued ?? Math.max(0, dashboard.totals.running - activeTasks.filter((task) => task.status === 'running').length);
+  const runningCount = dashboard.status_counts?.running ?? activeTasks.filter((task) => task.status === 'running').length;
+
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-3xl font-semibold">X 采集工作台</h1>
-        <p className="mt-2 max-w-3xl text-sm text-[hsl(var(--muted))]">
-          面向日常采样、任务排队和结果归档的工作台，覆盖账号、关键词、评论和主页资料任务。
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-semibold">运行监控</h1>
+          <p className="mt-2 max-w-3xl text-sm text-[hsl(var(--muted))]">
+            当前任务、异常处理和资源可用性集中在这里，适合日常盯采集进度。
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="secondary" onClick={() => (window.location.href = '/tasks')}>
+            <FolderKanban className="h-4 w-4" />
+            任务列表
+          </Button>
+          <Button onClick={() => (window.location.href = '/tasks/new')}>
+            <Plus className="h-4 w-4" />
+            新建任务
+          </Button>
+        </div>
       </div>
-      <ActionBar>
-        <Button onClick={() => (window.location.href = '/tasks/new')}>
-          <Plus className="h-4 w-4" />
-          新建任务
-        </Button>
-        <Button variant="secondary" onClick={() => (window.location.href = '/tasks')}>
-          <FolderKanban className="h-4 w-4" />
-          查看任务
-        </Button>
-      </ActionBar>
+
+      <Card>
+        <CardContent>
+          <div className="grid gap-3 md:grid-cols-5">
+            <StatusTile title="运行中" value={runningCount} detail={activeTasks[0]?.title || '当前没有运行任务'} tone={runningCount ? 'primary' : 'neutral'} icon={<Activity className="h-4 w-4" />} />
+            <StatusTile title="排队中" value={queueCount} detail={queueCount ? '等待 worker 执行' : '队列空闲'} tone={queueCount ? 'warning' : 'neutral'} icon={<Clock3 className="h-4 w-4" />} />
+            <StatusTile title="待处理" value={dashboard.totals.failed} detail={attentionTasks[0]?.error || attentionTasks[0]?.last_error_type || '暂无异常任务'} tone={dashboard.totals.failed ? 'danger' : 'success'} icon={<AlertTriangle className="h-4 w-4" />} />
+            <StatusTile title="账号可用" value={accountUsable} detail={accountIssues ? `${accountIssues} 个账号需关注` : '账号池可用'} tone={accountUsable ? 'success' : 'danger'} icon={<ShieldCheck className="h-4 w-4" />} />
+            <StatusTile title="代理可用" value={proxyUsable} detail={proxyIssues ? `${proxyIssues} 个代理需关注` : '代理池可用'} tone={proxyUsable ? 'success' : 'warning'} icon={<Network className="h-4 w-4" />} />
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="grid gap-4 xl:grid-cols-[1.15fr_0.85fr]">
+        <DashboardTaskPanel title="当前队列" icon={<Activity className="h-4 w-4 text-[hsl(var(--primary-dark))]" />} tasks={activeTasks} emptyTitle="当前空闲" emptyText="没有运行中或排队中的任务。" actionLabel="新建任务" actionHref="/tasks/new" />
+        <AttentionPanel tasks={attentionTasks} accountIssues={accountIssues} proxyIssues={proxyIssues} healthError={health?.last_error || ''} />
+      </div>
 
       <div className="grid gap-3 md:grid-cols-4">
-        <Metric title="总任务" value={dashboard.totals.tasks} />
         <Metric title="采集记录" value={dashboard.totals.records} />
-        <Metric title="输出文件" value={dashboard.totals.files} />
         <Metric title="媒体文件" value={dashboard.totals.media_files} />
+        <Metric title="输出文件" value={dashboard.totals.files} />
+        <Metric title="总任务" value={dashboard.totals.tasks} />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">
         <Card>
           <CardHeader>
-            <div className="flex items-center gap-2">
-              <TrendingUp className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
-              <h2 className="font-semibold">最近采集任务</h2>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
+                <h2 className="font-semibold">最近产出</h2>
+              </div>
+              <Button variant="secondary" size="sm" onClick={() => (window.location.href = '/tasks')}>
+                查看全部
+              </Button>
             </div>
           </CardHeader>
           <CardContent className="p-0">
@@ -340,33 +426,12 @@ function DashboardPage() {
                     <th className="px-4 py-3">任务</th>
                     <th className="px-4 py-3">目标</th>
                     <th className="px-4 py-3">状态</th>
-                    <th className="px-4 py-3">记录/文件</th>
-                    <th className="px-4 py-3">创建时间</th>
+                    <th className="px-4 py-3">产出</th>
+                    <th className="px-4 py-3">完成时间</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {dashboard.recent_tasks.map((task) => (
-                    <tr key={task.id} className="border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]">
-                      <td className="px-4 py-3">
-                        <button className="cursor-pointer text-left font-medium hover:text-[hsl(var(--primary-dark))]" onClick={() => (window.location.href = `/tasks/${task.id}`)}>
-                          {task.title}
-                        </button>
-                        <div className="mt-1 text-xs text-[hsl(var(--muted))]">{task.task_type}</div>
-                      </td>
-                      <td className="max-w-[260px] truncate px-4 py-3">{task.target}</td>
-                      <td className="px-4 py-3">
-                        <div className="space-y-1">
-                          <Badge tone={statusTone(task.status)}>{statusLabel(task.status)}</Badge>
-                          <div className="max-w-[260px] text-xs text-[hsl(var(--muted))]">{statusDescription(task.status)}</div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="font-medium">{task.summary.records} / {task.summary.files}</div>
-                        <div className="text-xs text-[hsl(var(--muted))]">记录 / 文件</div>
-                      </td>
-                      <td className="px-4 py-3">{task.created_at}</td>
-                    </tr>
-                  ))}
+                  {(recentOutputs.length ? recentOutputs : dashboard.recent_tasks).slice(0, 8).map((task) => <DashboardTableRow key={task.id} task={task} />)}
                   {!dashboard.recent_tasks.length && (
                     <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={5}>暂无任务</td></tr>
                   )}
@@ -380,13 +445,13 @@ function DashboardPage() {
           <CardHeader>
             <div className="flex items-center gap-2">
               <ShieldCheck className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
-              <h2 className="font-semibold">系统健康</h2>
+              <h2 className="font-semibold">资源健康</h2>
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="grid grid-cols-2 gap-2">
-              <InfoCard title="账号可用" value={String((health?.accounts?.active ?? 0) + (health?.accounts?.unknown ?? 0) + (health?.accounts?.check_failed ?? 0))} />
-              <InfoCard title="代理 active" value={String(health?.proxies?.active ?? 0)} />
+              <InfoCard title="账号可用" value={String(accountUsable)} />
+              <InfoCard title="代理可用" value={String(proxyUsable)} />
             </div>
               <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm">
                 <div className="flex items-center gap-2 font-medium">
@@ -394,6 +459,7 @@ function DashboardPage() {
                   健康检查：{health?.running ? '运行中' : '空闲'}
                 </div>
                 <div className="mt-1 text-[hsl(var(--muted))]">上次完成：{health?.last_finished_at || '-'}</div>
+                <div className="mt-1 text-[hsl(var(--muted))]">账号关注：{accountIssues} · 代理关注：{proxyIssues}</div>
                 {health?.last_error && (
                   <div className="mt-2 flex items-start gap-2 rounded-lg border border-[rgba(248,113,113,0.28)] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-[hsl(var(--danger))]">
                     <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
@@ -401,17 +467,163 @@ function DashboardPage() {
                   </div>
                 )}
               </div>
-            {dashboard.compliance_notes.map((note) => (
-              <div key={note} className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm text-[hsl(var(--muted))]">
-                {note}
-              </div>
-            ))}
           </CardContent>
         </Card>
       </div>
 
       <TemplateShelf />
     </div>
+  );
+}
+
+function StatusTile({ title, value, detail, tone, icon }: { title: string; value: number; detail: string; tone: BadgeTone; icon: React.ReactNode }) {
+  return (
+    <div className="min-h-28 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="text-sm text-[hsl(var(--muted))]">{title}</div>
+        <Badge tone={tone}>{icon}</Badge>
+      </div>
+      <div className="mt-2 text-3xl font-semibold leading-none">{value}</div>
+      <div className="mt-2 line-clamp-2 text-xs leading-5 text-[hsl(var(--muted))]">{detail || '-'}</div>
+    </div>
+  );
+}
+
+function DashboardTaskPanel({ title, icon, tasks, emptyTitle, emptyText, actionLabel, actionHref }: { title: string; icon: React.ReactNode; tasks: DashboardTask[]; emptyTitle: string; emptyText: string; actionLabel: string; actionHref: string }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            {icon}
+            <h2 className="font-semibold">{title}</h2>
+          </div>
+          <Button variant="secondary" size="sm" onClick={() => (window.location.href = actionHref)}>
+            {actionLabel}
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {tasks.map((task) => (
+          <button
+            key={task.id}
+            type="button"
+            onClick={() => (window.location.href = `/tasks/${task.id}`)}
+            className="grid w-full cursor-pointer gap-3 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-3 text-left transition-colors hover:border-[hsl(var(--primary))] hover:bg-[rgba(14,165,233,0.08)] md:grid-cols-[1fr_auto]"
+          >
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone={statusTone(task.status)}>{statusLabel(task.status)}</Badge>
+                <span className="truncate text-sm font-semibold">{task.title}</span>
+              </div>
+              <div className="mt-1 truncate text-xs text-[hsl(var(--muted))]">{task.target}</div>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-right text-xs text-[hsl(var(--muted))]">
+              <div><span className="block text-base font-semibold text-[hsl(var(--text))]">{task.summary.records}</span>记录</div>
+              <div><span className="block text-base font-semibold text-[hsl(var(--text))]">{task.summary.media_files}</span>媒体</div>
+              <div><span className="block text-base font-semibold text-[hsl(var(--text))]">{task.retry_count ?? 0}/{task.max_retries ?? 2}</span>重试</div>
+            </div>
+          </button>
+        ))}
+        {!tasks.length && (
+          <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-4 py-8 text-center">
+            <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-[rgba(34,197,94,0.14)] text-[hsl(var(--success))]">
+              <CheckCircle2 className="h-5 w-5" />
+            </div>
+            <div className="mt-3 font-semibold">{emptyTitle}</div>
+            <div className="mt-1 text-sm text-[hsl(var(--muted))]">{emptyText}</div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function AttentionPanel({ tasks, accountIssues, proxyIssues, healthError }: { tasks: DashboardTask[]; accountIssues: number; proxyIssues: number; healthError: string }) {
+  const hasIssues = tasks.length > 0 || accountIssues > 0 || proxyIssues > 0 || Boolean(healthError);
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-[hsl(var(--warning))]" />
+            <h2 className="font-semibold">需要处理</h2>
+          </div>
+          <Button variant="secondary" size="sm" onClick={() => (window.location.href = '/tasks')}>
+            排查任务
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {tasks.map((task) => (
+          <button
+            key={task.id}
+            type="button"
+            onClick={() => (window.location.href = `/tasks/${task.id}`)}
+            className="w-full cursor-pointer rounded-lg border border-[rgba(248,113,113,0.3)] bg-[rgba(248,113,113,0.08)] px-3 py-3 text-left transition-colors hover:bg-[rgba(248,113,113,0.12)]"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={statusTone(task.status)}>{statusLabel(task.status)}</Badge>
+              <span className="truncate text-sm font-semibold">{task.title}</span>
+            </div>
+            <div className="mt-1 line-clamp-2 text-xs leading-5 text-[hsl(var(--muted))]">{task.error || statusDescription(task.last_error_type || task.status) || task.target}</div>
+          </button>
+        ))}
+        {accountIssues > 0 && <AttentionNote label="账号池" value={`${accountIssues} 个账号需要检查、冷却或重新登录`} href="/accounts" />}
+        {proxyIssues > 0 && <AttentionNote label="代理池" value={`${proxyIssues} 个代理不可用、冷却或停用`} href="/proxies" />}
+        {healthError && <AttentionNote label="健康检查" value={healthError} href="/accounts" />}
+        {!hasIssues && (
+          <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-4 py-8 text-center">
+            <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-[rgba(34,197,94,0.14)] text-[hsl(var(--success))]">
+              <CheckCircle2 className="h-5 w-5" />
+            </div>
+            <div className="mt-3 font-semibold">暂无待处理事项</div>
+            <div className="mt-1 text-sm text-[hsl(var(--muted))]">任务、账号和代理当前没有明显异常。</div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function AttentionNote({ label, value, href }: { label: string; value: string; href: string }) {
+  return (
+    <button
+      type="button"
+      onClick={() => (window.location.href = href)}
+      className="flex w-full cursor-pointer items-start justify-between gap-3 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-3 text-left transition-colors hover:border-[hsl(var(--primary))] hover:bg-[rgba(14,165,233,0.08)]"
+    >
+      <div>
+        <div className="text-sm font-semibold">{label}</div>
+        <div className="mt-1 text-xs leading-5 text-[hsl(var(--muted))]">{value}</div>
+      </div>
+      <ArrowRight className="mt-1 h-4 w-4 shrink-0 text-[hsl(var(--primary-dark))]" />
+    </button>
+  );
+}
+
+function DashboardTableRow({ task }: { task: DashboardTask }) {
+  return (
+    <tr className="border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]">
+      <td className="px-4 py-3">
+        <button className="cursor-pointer text-left font-medium hover:text-[hsl(var(--primary-dark))]" onClick={() => (window.location.href = `/tasks/${task.id}`)}>
+          {task.title}
+        </button>
+        <div className="mt-1 text-xs text-[hsl(var(--muted))]">{task.task_type}</div>
+      </td>
+      <td className="max-w-[260px] truncate px-4 py-3">{task.target}</td>
+      <td className="px-4 py-3">
+        <div className="space-y-1">
+          <Badge tone={statusTone(task.status)}>{statusLabel(task.status)}</Badge>
+          <div className="max-w-[260px] text-xs text-[hsl(var(--muted))]">{statusDescription(task.status)}</div>
+        </div>
+      </td>
+      <td className="px-4 py-3">
+        <div className="font-medium">{task.summary.records} / {task.summary.media_files} / {formatBytes(task.summary.total_bytes)}</div>
+        <div className="text-xs text-[hsl(var(--muted))]">记录 / 媒体 / 大小</div>
+      </td>
+      <td className="px-4 py-3">{task.finished_at || task.created_at}</td>
+    </tr>
   );
 }
 
@@ -726,10 +938,9 @@ function TaskFormPage() {
   });
 
   useEffect(() => {
-    const firstAccountId = usableAccounts?.[0]?.id;
     const selectedAccountUsable = usableAccounts?.some((account) => account.id === form.account_id);
-    if (firstAccountId && (!form.account_id || !selectedAccountUsable)) {
-      setForm((prev) => ({ ...prev, account_id: firstAccountId }));
+    if (form.account_id && usableAccounts && !selectedAccountUsable) {
+      setForm((prev) => ({ ...prev, account_id: 0 }));
     }
   }, [usableAccounts, form.account_id]);
 
@@ -794,9 +1005,10 @@ function TaskFormPage() {
             </Field>
             <Field label="X账号">
               <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.account_id} onChange={(e) => setForm((prev) => ({ ...prev, account_id: Number(e.target.value) }))}>
+                <option value={0}>自动分配可用账号</option>
                 {(usableAccounts || []).map((account: Account) => (
                   <option key={account.id} value={account.id}>
-                    {account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.status !== 'active' ? ` · ${statusLabel(account.status)}` : ''}
+                    {account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.status !== 'active' ? ` · ${statusLabel(account.status)}` : ''}{account.cooldown_until ? ` · 冷却至 ${account.cooldown_until}` : ''}
                   </option>
                 ))}
               </select>
@@ -813,10 +1025,10 @@ function TaskFormPage() {
               value={form.proxy_id ?? ''}
               onChange={(e) => setForm((prev) => ({ ...prev, proxy_id: e.target.value ? Number(e.target.value) : null }))}
             >
-              <option value="">不使用代理池</option>
+              <option value="">自动分配或不使用代理</option>
               {usableProxies.map((proxy) => (
                 <option key={proxy.id} value={proxy.id}>
-                  {proxy.label}
+                  {proxy.label}{proxy.cooldown_until ? ` · 冷却至 ${proxy.cooldown_until}` : ''}
                 </option>
               ))}
             </select>
@@ -853,9 +1065,10 @@ function TaskFormPage() {
             </Field>
             <Field label="X账号">
               <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.account_id} onChange={(e) => setForm((prev) => ({ ...prev, account_id: Number(e.target.value) }))}>
+                <option value={0}>自动分配可用账号</option>
                 {(usableAccounts || []).map((account: Account) => (
                   <option key={account.id} value={account.id}>
-                    {account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.status !== 'active' ? ` · ${statusLabel(account.status)}` : ''}
+                    {account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.status !== 'active' ? ` · ${statusLabel(account.status)}` : ''}{account.cooldown_until ? ` · 冷却至 ${account.cooldown_until}` : ''}
                   </option>
                 ))}
               </select>
@@ -904,10 +1117,10 @@ function TaskFormPage() {
                 value={form.proxy_id ?? ''}
                 onChange={(e) => setForm((prev) => ({ ...prev, proxy_id: e.target.value ? Number(e.target.value) : null }))}
               >
-                <option value="">使用手填代理</option>
+                <option value="">自动分配或使用手填代理</option>
                 {usableProxies.map((proxy) => (
                   <option key={proxy.id} value={proxy.id}>
-                    {proxy.label}
+                    {proxy.label}{proxy.cooldown_until ? ` · 冷却至 ${proxy.cooldown_until}` : ''}
                   </option>
                 ))}
               </select>
@@ -1026,7 +1239,9 @@ function TaskDetailPage({ id }: { id: number }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data, isLoading } = useQuery({ queryKey: ['task', id], queryFn: () => api.task(id), refetchInterval: 4000 });
+  const { data: logData } = useQuery({ queryKey: ['operation-logs', 'task', id], queryFn: () => api.operationLogs({ task_id: id, limit: 80 }), refetchInterval: 4000 });
   const task = data?.task;
+  const operationLogs = logData?.logs || [];
   const [copyStatus, setCopyStatus] = useState('');
   const cancel = useMutation({
     mutationFn: () => api.cancelTask(id),
@@ -1145,6 +1360,14 @@ function TaskDetailPage({ id }: { id: number }) {
 
       <TaskPreviewPanel preview={task.preview} />
 
+      <div>
+        <div className="mb-3 flex items-center gap-2">
+          <ClipboardList className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
+          <h3 className="font-semibold">运维事件</h3>
+        </div>
+        <OperationLogTable logs={operationLogs} />
+      </div>
+
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
           <CardHeader><h3 className="font-semibold">配置</h3></CardHeader>
@@ -1186,7 +1409,6 @@ function TaskDetailPage({ id }: { id: number }) {
     </div>
   );
 }
-
 
 const PREVIEW_COLUMNS: Array<{ label: string; keys: string[]; type?: 'text' | 'link' | 'media' | 'metrics' }> = [
   { label: '时间', keys: ['Tweet Date', 'Reply Date'] },
@@ -1300,6 +1522,224 @@ function TaskPreviewPanel({ preview }: { preview?: TaskPreview }) {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function OperationLogTable({ logs }: { logs: OperationLog[] }) {
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <div className="overflow-auto">
+          <table className="w-full min-w-[1080px] border-collapse text-sm">
+            <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
+              <tr>
+                <th className="px-4 py-3">时间</th>
+                <th className="px-4 py-3">级别</th>
+                <th className="px-4 py-3">事件</th>
+                <th className="px-4 py-3">关联</th>
+                <th className="px-4 py-3">消息</th>
+                <th className="px-4 py-3">错误类型</th>
+              </tr>
+            </thead>
+            <tbody>
+              {logs.map((log) => (
+                <tr key={log.id} className="border-t border-[hsl(var(--line))] align-top hover:bg-[hsl(var(--panel-soft))]">
+                  <td className="whitespace-nowrap px-4 py-3">{log.created_at}</td>
+                  <td className="px-4 py-3"><Badge tone={levelTone(log.level)}>{levelLabel(log.level)}</Badge></td>
+                  <td className="px-4 py-3 font-medium">{log.event_type}</td>
+                  <td className="px-4 py-3 text-[hsl(var(--muted))]">
+                    {log.task_id ? <a className="text-[hsl(var(--primary-dark))] hover:text-[hsl(var(--text))]" href={`/tasks/${log.task_id}`}>任务 #{log.task_id}</a> : '-'}
+                    {log.schedule_id ? <div>计划 #{log.schedule_id}</div> : null}
+                  </td>
+                  <td className="max-w-[460px] px-4 py-3">
+                    <div className="whitespace-pre-wrap break-words">{log.message}</div>
+                    {Object.keys(log.details || {}).length > 0 && (
+                      <pre className="mt-2 max-h-28 overflow-auto rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-2 text-xs text-[hsl(var(--muted))]">{JSON.stringify(log.details, null, 2)}</pre>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">{log.error_type || '-'}</td>
+                </tr>
+              ))}
+              {!logs.length && (
+                <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={6}>暂无运维日志</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SchedulesPage() {
+  const queryClient = useQueryClient();
+  const { data: scheduleData } = useQuery({ queryKey: ['schedules'], queryFn: () => api.schedules(), refetchInterval: 8000 });
+  const { data: accountData } = useQuery({ queryKey: ['accounts'], queryFn: () => api.accounts() });
+  const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies() });
+  const schedules = scheduleData?.schedules || [];
+  const usableAccounts = (accountData?.accounts || []).filter((account) => USABLE_ACCOUNT_STATUSES.has(account.status));
+  const usableProxies = (proxiesData?.proxies || []).filter((proxy) => proxy.enabled && proxy.status === 'active');
+  const [form, setForm] = useState<ScheduleFormValues>(DEFAULT_SCHEDULE_FORM);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [error, setError] = useState('');
+  const saveSchedule = useMutation({
+    mutationFn: () => editingId ? api.updateSchedule(editingId, form) : api.createSchedule(form),
+    onSuccess: () => {
+      setError('');
+      setEditingId(null);
+      setForm((prev) => ({ ...DEFAULT_SCHEDULE_FORM, account_id: prev.account_id }));
+      queryClient.invalidateQueries({ queryKey: ['schedules'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const toggleSchedule = useMutation({
+    mutationFn: (id: number) => api.toggleSchedule(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['schedules'] }),
+  });
+  const deleteSchedule = useMutation({
+    mutationFn: (id: number) => api.deleteSchedule(id),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['schedules'] }),
+  });
+
+  useEffect(() => {
+    const firstAccountId = usableAccounts[0]?.id;
+    if (firstAccountId && !form.account_id) setForm((prev) => ({ ...prev, account_id: firstAccountId }));
+  }, [usableAccounts, form.account_id]);
+
+  const editSchedule = (schedule: ScheduledTask) => {
+    setEditingId(schedule.id);
+    setForm({
+      ...DEFAULT_SCHEDULE_FORM,
+      ...schedule.config,
+      name: schedule.name,
+      account_id: schedule.account_id,
+      proxy_id: schedule.proxy_id,
+      schedule_type: schedule.schedule_type,
+      run_time: schedule.run_time,
+      weekdays: schedule.weekdays.length ? schedule.weekdays : DEFAULT_SCHEDULE_FORM.weekdays,
+    } as ScheduleFormValues);
+  };
+
+  const toggleWeekday = (day: number) => {
+    setForm((prev) => ({
+      ...prev,
+      weekdays: prev.weekdays.includes(day) ? prev.weekdays.filter((item) => item !== day) : [...prev.weekdays, day].sort(),
+    }));
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-2xl font-semibold">定时任务</h2>
+        <p className="mt-1 text-sm text-[hsl(var(--muted))]">按每日或每周固定时间自动生成博主采集任务。</p>
+      </div>
+      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
+      <Card>
+        <CardHeader><h3 className="font-semibold">{editingId ? `编辑计划 #${editingId}` : '新建计划'}</h3></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 md:grid-cols-3">
+            <Field label="计划名称"><Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} /></Field>
+            <Field label="X账号">
+              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.account_id} onChange={(e) => setForm((prev) => ({ ...prev, account_id: Number(e.target.value) }))}>
+                {usableAccounts.map((account) => <option key={account.id} value={account.id}>{account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}</option>)}
+              </select>
+            </Field>
+            <Field label="采集类型">
+              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.task_type} onChange={(e) => setForm((prev) => ({ ...prev, task_type: e.target.value as ScheduleFormValues['task_type'] }))}>
+                <option value="benchmark_account">账号近况</option>
+                <option value="user_media">用户媒体</option>
+              </select>
+            </Field>
+          </div>
+          <Field label="目标博主 / 博主列表">
+            <Textarea rows={3} value={form.targets} onChange={(e) => setForm((prev) => ({ ...prev, targets: e.target.value }))} placeholder="每行一个用户名或主页链接" />
+          </Field>
+          <div className="grid gap-3 md:grid-cols-4">
+            <Field label="执行周期">
+              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.schedule_type} onChange={(e) => setForm((prev) => ({ ...prev, schedule_type: e.target.value as ScheduleFormValues['schedule_type'] }))}>
+                <option value="daily">每日</option>
+                <option value="weekly">每周</option>
+              </select>
+            </Field>
+            <Field label="执行时间"><Input type="time" value={form.run_time} onChange={(e) => setForm((prev) => ({ ...prev, run_time: e.target.value }))} /></Field>
+            <Field label="采集条数"><Input type="number" min={1} value={form.tweet_limit} onChange={(e) => setForm((prev) => ({ ...prev, tweet_limit: Number(e.target.value) }))} /></Field>
+            <Field label="并发数"><Input type="number" min={1} value={form.max_concurrent_requests} onChange={(e) => setForm((prev) => ({ ...prev, max_concurrent_requests: Number(e.target.value) }))} /></Field>
+          </div>
+          {form.schedule_type === 'weekly' && (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-7">
+              {WEEKDAYS.map((day) => <Check key={day.value} label={day.label} checked={form.weekdays.includes(day.value)} onCheckedChange={() => toggleWeekday(day.value)} />)}
+            </div>
+          )}
+          <div className="grid gap-3 md:grid-cols-3">
+            <Check label="下载视频" checked={form.has_video} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_video: checked }))} />
+            <Check label="去重日志" checked={form.down_log} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, down_log: checked }))} />
+            <Check label="输出 Markdown" checked={form.md_output} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, md_output: checked }))} />
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <Field label="代理池">
+              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.proxy_id ?? ''} onChange={(e) => setForm((prev) => ({ ...prev, proxy_id: e.target.value ? Number(e.target.value) : null }))}>
+                <option value="">不使用代理池</option>
+                {usableProxies.map((proxy) => <option key={proxy.id} value={proxy.id}>{proxy.label}</option>)}
+              </select>
+            </Field>
+            <Field label="时间范围"><Input value={form.time_range} onChange={(e) => setForm((prev) => ({ ...prev, time_range: e.target.value }))} /></Field>
+          </div>
+          <div className="flex justify-end gap-2">
+            {editingId && <Button variant="secondary" onClick={() => { setEditingId(null); setForm(DEFAULT_SCHEDULE_FORM); }}>取消编辑</Button>}
+            <Button onClick={() => saveSchedule.mutate()} disabled={saveSchedule.isPending || !form.targets.trim() || !form.account_id}>保存计划</Button>
+          </div>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardContent className="p-0">
+          <div className="overflow-auto">
+            <table className="w-full min-w-[1120px] border-collapse text-sm">
+              <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
+                <tr><th className="px-4 py-3">计划</th><th className="px-4 py-3">状态</th><th className="px-4 py-3">周期</th><th className="px-4 py-3">目标</th><th className="px-4 py-3">下次执行</th><th className="px-4 py-3">最近任务</th><th className="px-4 py-3"></th></tr>
+              </thead>
+              <tbody>
+                {schedules.map((schedule) => (
+                  <tr key={schedule.id} className="border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]">
+                    <td className="px-4 py-3"><div className="font-medium">#{schedule.id} {schedule.name}</div><div className="mt-1 text-xs text-[hsl(var(--muted))]">{schedule.username || '-'}</div></td>
+                    <td className="px-4 py-3"><Badge tone={schedule.enabled ? 'success' : 'neutral'}>{schedule.enabled ? '已启用' : '已停用'}</Badge></td>
+                    <td className="px-4 py-3">{schedule.schedule_type === 'daily' ? '每日' : `每周 ${schedule.weekdays.map((day) => WEEKDAYS.find((item) => item.value === day)?.label).join(' ')}`} · {schedule.run_time}</td>
+                    <td className="max-w-[260px] truncate px-4 py-3">{String(schedule.config.targets || '-')}</td>
+                    <td className="px-4 py-3">{schedule.next_run_at || '-'}</td>
+                    <td className="px-4 py-3">{schedule.last_task_id ? <a className="text-[hsl(var(--primary-dark))]" href={`/tasks/${schedule.last_task_id}`}>#{schedule.last_task_id}</a> : '-'}</td>
+                    <td className="px-4 py-3"><div className="flex justify-end gap-2"><Button variant="secondary" size="sm" onClick={() => editSchedule(schedule)}>编辑</Button><Button variant="secondary" size="sm" onClick={() => toggleSchedule.mutate(schedule.id)}>{schedule.enabled ? '停用' : '启用'}</Button><Button variant="danger" size="sm" onClick={() => deleteSchedule.mutate(schedule.id)}>删除</Button></div></td>
+                  </tr>
+                ))}
+                {!schedules.length && <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={7}>暂无定时任务</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function OperationLogsPage() {
+  const [level, setLevel] = useState('');
+  const { data, refetch } = useQuery({ queryKey: ['operation-logs', level], queryFn: () => api.operationLogs({ level: level || undefined, limit: 300 }), refetchInterval: 5000 });
+  const logs = data?.logs || [];
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-2xl font-semibold">运维日志</h2>
+        <p className="mt-1 text-sm text-[hsl(var(--muted))]">记录任务创建、调度、执行、失败分类和重试事件。</p>
+      </div>
+      <ActionBar>
+        <select className="h-10 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3 text-sm" value={level} onChange={(e) => setLevel(e.target.value)}>
+          <option value="">全部级别</option>
+          <option value="info">信息</option>
+          <option value="warning">警告</option>
+          <option value="error">错误</option>
+        </select>
+        <Button variant="secondary" onClick={() => refetch()}><RefreshCcw className="h-4 w-4" />刷新</Button>
+      </ActionBar>
+      <OperationLogTable logs={logs} />
+    </div>
   );
 }
 
@@ -1592,13 +2032,14 @@ function AccountsPage() {
       <Card>
         <CardContent className="p-0">
           <div className="overflow-auto">
-            <table className="w-full min-w-[1120px] border-collapse text-sm">
+            <table className="w-full min-w-[1320px] border-collapse text-sm">
               <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
                 <tr>
                   <th className="px-4 py-3">ID</th>
                   <th className="px-4 py-3">名称</th>
                   <th className="px-4 py-3">用户名</th>
                   <th className="px-4 py-3">状态</th>
+                  <th className="px-4 py-3">治理</th>
                   <th className="px-4 py-3">检测时间</th>
                   <th className="px-4 py-3">失败原因</th>
                   <th className="px-4 py-3"></th>
@@ -1616,6 +2057,14 @@ function AccountsPage() {
                         <div className="max-w-[220px] text-xs text-[hsl(var(--muted))]">{statusDescription(account.status) || '账号状态'}</div>
                       </div>
                     </td>
+                    <td className="px-4 py-3">
+                      <div className="space-y-1 text-xs text-[hsl(var(--muted))]">
+                        <div><Badge tone={account.tier === 'stable' ? 'success' : 'warning'}>{statusLabel(account.tier)}</Badge></div>
+                        <div>任务 {account.task_count} · 成功 {account.success_count} · 失败 {account.failure_count}</div>
+                        <div>上次使用：{account.last_used_at || '-'}</div>
+                        <div>冷却至：{account.cooldown_until || '-'}</div>
+                      </div>
+                    </td>
                     <td className="px-4 py-3">{account.last_checked_at || '-'}</td>
                     <td className="max-w-[280px] truncate px-4 py-3 text-[hsl(var(--muted))]">{account.last_error || '-'}</td>
                     <td className="px-4 py-3">
@@ -1631,7 +2080,7 @@ function AccountsPage() {
                   </tr>
                 ))}
                 {!accounts.length && (
-                  <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={7}>还没有账号</td></tr>
+                  <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={8}>还没有账号</td></tr>
                 )}
               </tbody>
             </table>
@@ -1730,7 +2179,7 @@ function ProxyPage() {
                   <th className="px-4 py-3">代理</th>
                   <th className="px-4 py-3">状态</th>
                   <th className="px-4 py-3">出口 IP</th>
-                  <th className="px-4 py-3">失败次数</th>
+                  <th className="px-4 py-3">治理</th>
                   <th className="px-4 py-3">检测时间</th>
                   <th className="px-4 py-3">错误</th>
                   <th className="px-4 py-3"></th>
@@ -1753,7 +2202,13 @@ function ProxyPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3">{proxy.detected_ip || '-'}</td>
-                    <td className="px-4 py-3">{proxy.failure_count}</td>
+                    <td className="px-4 py-3">
+                      <div className="space-y-1 text-xs text-[hsl(var(--muted))]">
+                        <div>成功 {proxy.success_count} · 失败 {proxy.failure_count}</div>
+                        <div>上次使用：{proxy.last_used_at || '-'}</div>
+                        <div>冷却至：{proxy.cooldown_until || '-'}</div>
+                      </div>
+                    </td>
                     <td className="px-4 py-3">{proxy.last_checked_at || '-'}</td>
                     <td className="px-4 py-3 max-w-[280px] truncate text-[hsl(var(--muted))]">{proxy.last_error || '-'}</td>
                     <td className="px-4 py-3">

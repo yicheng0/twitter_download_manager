@@ -76,6 +76,8 @@ class csv_gen():
 
 def download_control(media_lst):
     async def _main():
+        client_limits = httpx.Limits(max_connections=max_concurrent_requests, max_keepalive_connections=max_concurrent_requests)
+        client = httpx.AsyncClient(proxy=proxy_for_httpx(proxy), limits=client_limits)
         async def down_save(url, _file_name, is_image):
             if is_image:
                 url += '?format=png&name=4096x4096'
@@ -84,8 +86,7 @@ def download_control(media_lst):
             while True:  #下载失败重试次数
                 try:
                     async with semaphore:
-                        async with httpx.AsyncClient(proxy=proxy_for_httpx(proxy)) as client:
-                            response = await client.get(quote_url(url), timeout=(3.05, 16))        #如果出现第五次或以上的下载失败,且确认不是网络问题,可以适当降低最大并发数量
+                        response = await client.get(quote_url(url), timeout=(3.05, 16))        #如果出现第五次或以上的下载失败,且确认不是网络问题,可以适当降低最大并发数量
                     with open(_file_name,'wb') as f:
                         f.write(response.content)
                     break
@@ -98,7 +99,10 @@ def download_control(media_lst):
                     print(f'{url}=====>第{count}次下载失败,正在重试')
 
         semaphore = asyncio.Semaphore(max_concurrent_requests)
-        await asyncio.gather(*[asyncio.create_task(down_save(url[0], url[1], url[2])) for url in media_lst])   # 0:url 1:_file_name 2:is_image
+        try:
+            await asyncio.gather(*[asyncio.create_task(down_save(url[0], url[1], url[2])) for url in media_lst])   # 0:url 1:_file_name 2:is_image
+        finally:
+            await client.aclose()
 
     asyncio.run(_main())
 

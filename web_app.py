@@ -66,17 +66,30 @@ templates = Jinja2Templates(directory=str(BASE_DIR / 'templates'))
 
 worker_lock = threading.Lock()
 worker_thread = None
+worker_threads = []
 stop_worker = False
 
 health_lock = threading.Lock()
 health_thread = None
 stop_health_worker = False
+schedule_lock = threading.Lock()
+schedule_thread = None
+stop_schedule_worker = False
 BROWSER_LOGIN_TIMEOUT_SECONDS = 300
 browser_login_lock = asyncio.Lock()
 browser_login_session = None
 LOCAL_BROWSER_LOGIN_TIMEOUT_SECONDS = 300
 local_browser_login_sessions = {}
 local_browser_login_lock = threading.Lock()
+ACCOUNT_NEW_TASK_LIMIT_24H = 3
+ACCOUNT_STABLE_TASK_LIMIT_24H = 20
+ACCOUNT_MIN_INTERVAL_SECONDS = 10 * 60
+ACCOUNT_NEW_MIN_INTERVAL_SECONDS = 30 * 60
+ACCOUNT_RATE_LIMIT_COOLDOWN_SECONDS = 6 * 60 * 60
+ACCOUNT_TRANSIENT_COOLDOWN_SECONDS = 30 * 60
+PROXY_MIN_INTERVAL_SECONDS = 3 * 60
+PROXY_FAILURE_COOLDOWN_SECONDS = 30 * 60
+PROXY_RATE_LIMIT_COOLDOWN_SECONDS = 2 * 60 * 60
 
 
 def browser_login_available():
@@ -141,6 +154,10 @@ def local_browser_login_payload(token):
     }
 HEALTH_CHECK_INTERVAL = int(os.environ.get('TW_WEB_HEALTH_INTERVAL', '900') or 900)
 TASK_RETRY_DELAY_SECONDS = int(os.environ.get('TW_WEB_RETRY_DELAY_SECONDS', '30') or 30)
+WORKER_CONCURRENCY = max(1, int(os.environ.get('TW_WORKER_CONCURRENCY', '2') or 2))
+SQLITE_BUSY_TIMEOUT_MS = max(1000, int(os.environ.get('TW_SQLITE_BUSY_TIMEOUT_MS', '5000') or 5000))
+TASK_LEASE_TIMEOUT_SECONDS = max(60, int(os.environ.get('TW_TASK_LEASE_TIMEOUT_SECONDS', '300') or 300))
+TASK_HEARTBEAT_SECONDS = max(5, int(os.environ.get('TW_TASK_HEARTBEAT_SECONDS', '15') or 15))
 health_state = {
     'running': False,
     'last_started_at': None,
@@ -173,11 +190,16 @@ run_state = {
 def db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute(f'pragma busy_timeout = {SQLITE_BUSY_TIMEOUT_MS}')
     return conn
 
 
 def now():
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+def seconds_from_now(seconds):
+    return (datetime.now() + timedelta(seconds=seconds)).strftime('%Y-%m-%d %H:%M:%S')
 
 
 def default_time_range(days=365):
@@ -217,6 +239,11 @@ def init_db():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     TASKS_DIR.mkdir(parents=True, exist_ok=True)
     with db() as conn:
+        try:
+            conn.execute('pragma journal_mode = wal')
+            conn.execute('pragma synchronous = normal')
+        except sqlite3.DatabaseError:
+            pass
         conn.executescript(
             '''
             create table if not exists users (
@@ -263,6 +290,65 @@ def init_db():
                 finished_at text,
                 process_id integer
             );
+            create table if not exists scheduled_tasks (
+                id integer primary key autoincrement,
+                user_id integer not null,
+                account_id integer not null,
+                name text not null,
+                enabled integer not null default 1,
+                schedule_type text not null,
+                run_time text not null,
+                weekdays text,
+                config_json text not null,
+                next_run_at text,
+                last_run_at text,
+                last_task_id integer,
+                created_at text not null,
+                updated_at text not null
+            );
+            create table if not exists operation_logs (
+                id integer primary key autoincrement,
+                created_at text not null,
+                level text not null,
+                event_type text not null,
+                task_id integer,
+                schedule_id integer,
+                error_type text,
+                message text not null,
+                details_json text
+            );
+            create table if not exists task_items (
+                id integer primary key autoincrement,
+                task_id integer not null,
+                source_file text,
+                tweet_url text,
+                tweet_date text,
+                display_name text,
+                screen_name text,
+                content text,
+                favorite_count integer not null default 0,
+                retweet_count integer not null default 0,
+                reply_count integer not null default 0,
+                media_count integer not null default 0,
+                created_at text not null,
+                unique(task_id, tweet_url, content)
+            );
+            create table if not exists media_assets (
+                id integer primary key autoincrement,
+                task_id integer not null,
+                task_item_id integer,
+                source_file text,
+                tweet_url text,
+                media_type text,
+                media_url text,
+                file_path text,
+                file_name text,
+                status text not null default 'indexed',
+                error text,
+                byte_size integer not null default 0,
+                created_at text not null,
+                unique(task_id, media_url, file_path)
+            );
             '''
         )
         existing = conn.execute('select id from users where username = ?', (DEFAULT_ADMIN_USER,)).fetchone()
@@ -274,10 +360,35 @@ def init_db():
         ensure_column(conn, 'accounts', 'last_error', 'text')
         ensure_column(conn, 'proxies', 'detected_ip', 'text')
         ensure_column(conn, 'proxies', 'failure_count', 'integer not null default 0')
+        ensure_column(conn, 'accounts', 'success_count', 'integer not null default 0')
+        ensure_column(conn, 'accounts', 'failure_count', 'integer not null default 0')
+        ensure_column(conn, 'accounts', 'task_count', 'integer not null default 0')
+        ensure_column(conn, 'accounts', 'last_used_at', 'text')
+        ensure_column(conn, 'accounts', 'cooldown_until', 'text')
+        ensure_column(conn, 'accounts', 'tier', "text not null default 'new'")
+        ensure_column(conn, 'proxies', 'success_count', 'integer not null default 0')
+        ensure_column(conn, 'proxies', 'last_used_at', 'text')
+        ensure_column(conn, 'proxies', 'cooldown_until', 'text')
         ensure_column(conn, 'tasks', 'retry_count', 'integer not null default 0')
         ensure_column(conn, 'tasks', 'max_retries', 'integer not null default 2')
         ensure_column(conn, 'tasks', 'last_retry_at', 'text')
         ensure_column(conn, 'tasks', 'last_error_type', 'text')
+        ensure_column(conn, 'tasks', 'proxy_id', 'integer')
+        ensure_column(conn, 'tasks', 'resource_mode', "text not null default 'manual'")
+        ensure_column(conn, 'tasks', 'schedule_id', 'integer')
+        ensure_column(conn, 'tasks', 'locked_by', 'text')
+        ensure_column(conn, 'tasks', 'locked_at', 'text')
+        ensure_column(conn, 'tasks', 'heartbeat_at', 'text')
+        ensure_column(conn, 'tasks', 'progress_total', 'integer not null default 0')
+        ensure_column(conn, 'tasks', 'progress_done', 'integer not null default 0')
+        ensure_column(conn, 'tasks', 'api_calls', 'integer not null default 0')
+        ensure_column(conn, 'tasks', 'download_count', 'integer not null default 0')
+        ensure_column(conn, 'scheduled_tasks', 'proxy_id', 'integer')
+        conn.execute('create index if not exists idx_tasks_queue on tasks(status, last_retry_at, id)')
+        conn.execute('create index if not exists idx_tasks_lease on tasks(status, heartbeat_at)')
+        conn.execute('create index if not exists idx_task_items_task on task_items(task_id)')
+        conn.execute('create index if not exists idx_media_assets_task on media_assets(task_id)')
+        conn.execute('create index if not exists idx_media_assets_url on media_assets(media_url)')
 
 
 def ensure_column(conn, table, column, definition):
@@ -341,6 +452,12 @@ def account_payload(account):
         'status': account['status'],
         'last_checked_at': account['last_checked_at'],
         'last_error': account['last_error'] if 'last_error' in account.keys() else None,
+        'success_count': account['success_count'] if 'success_count' in account.keys() else 0,
+        'failure_count': account['failure_count'] if 'failure_count' in account.keys() else 0,
+        'task_count': account['task_count'] if 'task_count' in account.keys() else 0,
+        'last_used_at': account['last_used_at'] if 'last_used_at' in account.keys() else None,
+        'cooldown_until': account['cooldown_until'] if 'cooldown_until' in account.keys() else None,
+        'tier': account['tier'] if 'tier' in account.keys() else 'new',
         'created_at': account['created_at'],
     }
 
@@ -356,17 +473,24 @@ def proxy_payload(proxy):
         'last_error': proxy['last_error'],
         'detected_ip': proxy['detected_ip'] if 'detected_ip' in proxy.keys() else None,
         'failure_count': proxy['failure_count'] if 'failure_count' in proxy.keys() else 0,
+        'success_count': proxy['success_count'] if 'success_count' in proxy.keys() else 0,
+        'last_used_at': proxy['last_used_at'] if 'last_used_at' in proxy.keys() else None,
+        'cooldown_until': proxy['cooldown_until'] if 'cooldown_until' in proxy.keys() else None,
         'created_at': proxy['created_at'],
     }
 
 
 def task_payload(task, include_config=False, include_log=False, include_files=False, include_preview=False):
     summary = task_summary(task)
+    indexed_counts = task_index_counts(task['id'])
     payload = {
         'id': task['id'],
         'user_id': task['user_id'],
         'username': task['username'] if 'username' in task.keys() else None,
         'account_id': task['account_id'],
+        'proxy_id': task['proxy_id'] if 'proxy_id' in task.keys() else None,
+        'schedule_id': task['schedule_id'] if 'schedule_id' in task.keys() else None,
+        'resource_mode': task['resource_mode'] if 'resource_mode' in task.keys() else 'manual',
         'task_type': task['task_type'],
         'title': task['title'],
         'status': task['status'],
@@ -375,6 +499,19 @@ def task_payload(task, include_config=False, include_log=False, include_files=Fa
         'started_at': task['started_at'],
         'finished_at': task['finished_at'],
         'process_id': task['process_id'],
+        'locked_by': task['locked_by'] if 'locked_by' in task.keys() else None,
+        'locked_at': task['locked_at'] if 'locked_at' in task.keys() else None,
+        'heartbeat_at': task['heartbeat_at'] if 'heartbeat_at' in task.keys() else None,
+        'progress_total': task['progress_total'] if 'progress_total' in task.keys() else 0,
+        'progress_done': task['progress_done'] if 'progress_done' in task.keys() else 0,
+        'api_calls': task['api_calls'] if 'api_calls' in task.keys() else 0,
+        'download_count': task['download_count'] if 'download_count' in task.keys() else 0,
+        'progress': {
+            'total': task['progress_total'] if 'progress_total' in task.keys() else 0,
+            'done': task['progress_done'] if 'progress_done' in task.keys() else 0,
+        },
+        'worker_id': task['locked_by'] if 'locked_by' in task.keys() else None,
+        'indexed_counts': indexed_counts,
         'retry_count': task['retry_count'] if 'retry_count' in task.keys() else 0,
         'max_retries': task['max_retries'] if 'max_retries' in task.keys() else 2,
         'last_retry_at': task['last_retry_at'] if 'last_retry_at' in task.keys() else None,
@@ -421,6 +558,54 @@ def public_config(config):
     if clean.get('proxy'):
         clean['proxy'] = redact_proxy_url(clean['proxy'])
     return clean
+
+
+def safe_details(details):
+    if not details:
+        return {}
+    try:
+        text = redact_sensitive(json.dumps(details, ensure_ascii=False, default=str))
+        return json.loads(text)
+    except Exception:
+        return {'value': redact_sensitive(str(details))}
+
+
+def append_operation_log(level, event_type, message, task_id=None, schedule_id=None, error_type=None, details=None):
+    with db() as conn:
+        conn.execute(
+            '''
+            insert into operation_logs (created_at, level, event_type, task_id, schedule_id, error_type, message, details_json)
+            values (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                now(),
+                level,
+                event_type,
+                task_id,
+                schedule_id,
+                error_type,
+                redact_sensitive(message),
+                json.dumps(safe_details(details), ensure_ascii=False),
+            ),
+        )
+
+
+def operation_log_payload(row):
+    try:
+        details = json.loads(row['details_json'] or '{}')
+    except Exception:
+        details = {}
+    return {
+        'id': row['id'],
+        'created_at': row['created_at'],
+        'level': row['level'],
+        'event_type': row['event_type'],
+        'task_id': row['task_id'],
+        'schedule_id': row['schedule_id'],
+        'error_type': row['error_type'],
+        'message': row['message'],
+        'details': details,
+    }
 
 
 def task_target_label(config):
@@ -574,6 +759,232 @@ def task_summary(task):
     }
 
 
+def task_index_counts(task_id):
+    try:
+        with db() as conn:
+            items = conn.execute('select count(*) as count from task_items where task_id = ?', (task_id,)).fetchone()
+            media = conn.execute('select count(*) as count from media_assets where task_id = ?', (task_id,)).fetchone()
+        return {
+            'items': int(items['count'] if items else 0),
+            'media_assets': int(media['count'] if media else 0),
+        }
+    except Exception:
+        return {'items': 0, 'media_assets': 0}
+
+
+def int_from_cell(value):
+    try:
+        return int(str(value or '').replace(',', '').strip() or 0)
+    except ValueError:
+        return 0
+
+
+def first_existing(row, *names):
+    for name in names:
+        if name in row and row[name]:
+            return row[name]
+    return ''
+
+
+def index_task_outputs(task):
+    output_dir = Path(task['output_dir'])
+    if not output_dir.exists():
+        return {'items': 0, 'media_assets': 0}
+    csv_paths = sorted(output_dir.rglob('*.csv'))
+    with db() as conn:
+        conn.execute('delete from media_assets where task_id = ?', (task['id'],))
+        conn.execute('delete from task_items where task_id = ?', (task['id'],))
+        item_count = 0
+        media_count = 0
+        for path in csv_paths:
+            try:
+                with open(path, newline='', encoding='utf-8-sig', errors='replace') as f:
+                    reader = csv.reader(f)
+                    headers = None
+                    for raw_row in reader:
+                        if not raw_row:
+                            continue
+                        if headers is None:
+                            if 'Tweet URL' in raw_row or 'Tweet Content' in raw_row:
+                                headers = raw_row
+                            continue
+                        row = {headers[index]: raw_row[index] if index < len(raw_row) else '' for index in range(len(headers))}
+                        tweet_url = first_existing(row, 'Tweet URL')
+                        content = first_existing(row, 'Tweet Content')
+                        if not tweet_url and not content:
+                            continue
+                        cursor = conn.execute(
+                            '''
+                            insert or ignore into task_items
+                              (task_id, source_file, tweet_url, tweet_date, display_name, screen_name, content,
+                               favorite_count, retweet_count, reply_count, media_count, created_at)
+                            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+                            ''',
+                            (
+                                task['id'],
+                                str(path.relative_to(output_dir)),
+                                tweet_url,
+                                first_existing(row, 'Tweet Date'),
+                                first_existing(row, 'Display Name'),
+                                first_existing(row, 'User Name'),
+                                content,
+                                int_from_cell(first_existing(row, 'Favorite Count')),
+                                int_from_cell(first_existing(row, 'Retweet Count')),
+                                int_from_cell(first_existing(row, 'Reply Count')),
+                                now(),
+                            ),
+                        )
+                        if cursor.rowcount:
+                            item_id = cursor.lastrowid
+                            item_count += 1
+                        else:
+                            existing = conn.execute(
+                                'select id from task_items where task_id = ? and tweet_url = ? and content = ?',
+                                (task['id'], tweet_url, content),
+                            ).fetchone()
+                            item_id = existing['id'] if existing else None
+                        media_url = first_existing(row, 'Media URL')
+                        saved_path = first_existing(row, 'Saved Path', 'Saved Filename')
+                        media_type = first_existing(row, 'Media Type')
+                        if media_url or saved_path:
+                            file_path = Path(saved_path) if saved_path else None
+                            if file_path and not file_path.is_absolute():
+                                file_path = output_dir / saved_path
+                            byte_size = file_path.stat().st_size if file_path and file_path.exists() and file_path.is_file() else 0
+                            media_cursor = conn.execute(
+                                '''
+                                insert or ignore into media_assets
+                                  (task_id, task_item_id, source_file, tweet_url, media_type, media_url, file_path, file_name, status, byte_size, created_at)
+                                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ''',
+                                (
+                                    task['id'],
+                                    item_id,
+                                    str(path.relative_to(output_dir)),
+                                    tweet_url,
+                                    media_type,
+                                    media_url,
+                                    str(file_path) if file_path else saved_path,
+                                    Path(saved_path).name if saved_path else '',
+                                    'downloaded' if byte_size else 'indexed',
+                                    byte_size,
+                                    now(),
+                                ),
+                            )
+                            if media_cursor.rowcount:
+                                media_count += 1
+            except Exception as exc:
+                append_operation_log(
+                    'warning',
+                    'task_index_warning',
+                    f'结果索引跳过文件 {path.name}: {redact_sensitive(str(exc))}',
+                    task_id=task['id'],
+                    schedule_id=task['schedule_id'] if 'schedule_id' in task.keys() else None,
+                    error_type='index_warning',
+                )
+        conn.execute(
+            '''
+            update task_items
+            set media_count = (
+                select count(*) from media_assets
+                where media_assets.task_item_id = task_items.id
+            )
+            where task_id = ?
+            ''',
+            (task['id'],),
+        )
+    return {'items': item_count, 'media_assets': media_count}
+
+
+def parse_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value), '%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        return None
+
+
+def validate_schedule_time(value):
+    text = str(value or '').strip()
+    if not re.match(r'^\d{2}:\d{2}$', text):
+        raise HTTPException(status_code=400, detail='执行时间格式应为 HH:MM')
+    hour, minute = [int(part) for part in text.split(':', 1)]
+    if hour > 23 or minute > 59:
+        raise HTTPException(status_code=400, detail='执行时间需要在 00:00 到 23:59 之间')
+    return f'{hour:02d}:{minute:02d}'
+
+
+def normalize_weekdays(value):
+    if value in (None, ''):
+        return []
+    if isinstance(value, str):
+        parts = re.split(r'[\s,]+', value)
+    else:
+        parts = value
+    days = []
+    for item in parts:
+        if item in (None, ''):
+            continue
+        try:
+            day = int(item)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail='周几需要是 1 到 7 的数字')
+        if day < 1 or day > 7:
+            raise HTTPException(status_code=400, detail='周几需要是 1 到 7 的数字')
+        if day not in days:
+            days.append(day)
+    return sorted(days)
+
+
+def next_schedule_run(schedule_type, run_time, weekdays=None, after=None):
+    base = after or datetime.now()
+    run_time = validate_schedule_time(run_time)
+    hour, minute = [int(part) for part in run_time.split(':', 1)]
+    if schedule_type == 'daily':
+        candidate = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= base:
+            candidate += timedelta(days=1)
+        return candidate.strftime('%Y-%m-%d %H:%M:%S')
+    if schedule_type == 'weekly':
+        days = normalize_weekdays(weekdays)
+        if not days:
+            raise HTTPException(status_code=400, detail='每周执行需要至少选择一个星期')
+        for offset in range(8):
+            candidate_date = base.date() + timedelta(days=offset)
+            candidate = datetime.combine(candidate_date, datetime.min.time()).replace(hour=hour, minute=minute)
+            if candidate <= base:
+                continue
+            if candidate.isoweekday() in days:
+                return candidate.strftime('%Y-%m-%d %H:%M:%S')
+    raise HTTPException(status_code=400, detail='定时类型只能是 daily 或 weekly')
+
+
+def schedule_payload(row):
+    try:
+        config = public_config(json.loads(row['config_json'] or '{}'))
+    except Exception:
+        config = {}
+    return {
+        'id': row['id'],
+        'user_id': row['user_id'],
+        'username': row['username'] if 'username' in row.keys() else None,
+        'account_id': row['account_id'],
+        'proxy_id': row['proxy_id'] if 'proxy_id' in row.keys() else config.get('proxy_id'),
+        'name': row['name'],
+        'enabled': bool(row['enabled']),
+        'schedule_type': row['schedule_type'],
+        'run_time': row['run_time'],
+        'weekdays': normalize_weekdays(row['weekdays']),
+        'config': config,
+        'next_run_at': row['next_run_at'],
+        'last_run_at': row['last_run_at'],
+        'last_task_id': row['last_task_id'],
+        'created_at': row['created_at'],
+        'updated_at': row['updated_at'],
+    }
+
+
 def write_summary_report(task):
     output_dir = Path(task['output_dir'])
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -706,6 +1117,134 @@ def active_proxies():
         return conn.execute("select * from proxies where enabled = 1 and status = 'active' order by id desc").fetchall()
 
 
+def account_tier(account):
+    tier = account['tier'] if 'tier' in account.keys() else None
+    if tier:
+        return tier
+    return 'stable' if int(account['success_count'] if 'success_count' in account.keys() else 0) >= 5 else 'new'
+
+
+def row_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value), '%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        return None
+
+
+def in_cooldown(row):
+    cooldown_until = row_datetime(row['cooldown_until'] if 'cooldown_until' in row.keys() else None)
+    return bool(cooldown_until and cooldown_until > datetime.now())
+
+
+def account_min_interval_seconds(account):
+    return ACCOUNT_NEW_MIN_INTERVAL_SECONDS if account_tier(account) == 'new' else ACCOUNT_MIN_INTERVAL_SECONDS
+
+
+def account_daily_limit(account):
+    return ACCOUNT_NEW_TASK_LIMIT_24H if account_tier(account) == 'new' else ACCOUNT_STABLE_TASK_LIMIT_24H
+
+
+def account_tasks_last_24h(conn, account_id):
+    row = conn.execute(
+        "select count(*) as count from tasks where account_id = ? and datetime(created_at) >= datetime('now', 'localtime', '-1 day')",
+        (account_id,),
+    ).fetchone()
+    return int(row['count'] if row else 0)
+
+
+def seconds_since(value):
+    dt = row_datetime(value)
+    if not dt:
+        return 10**9
+    return max(0, int((datetime.now() - dt).total_seconds()))
+
+
+def account_available_for_task(conn, account):
+    if in_cooldown(account):
+        return False
+    if seconds_since(account['last_used_at'] if 'last_used_at' in account.keys() else None) < account_min_interval_seconds(account):
+        return False
+    if account_tasks_last_24h(conn, account['id']) >= account_daily_limit(account):
+        return False
+    return True
+
+
+def proxy_available_for_task(proxy):
+    if in_cooldown(proxy):
+        return False
+    if seconds_since(proxy['last_used_at'] if 'last_used_at' in proxy.keys() else None) < PROXY_MIN_INTERVAL_SECONDS:
+        return False
+    return True
+
+
+def account_selection_score(conn, account):
+    recent_tasks = account_tasks_last_24h(conn, account['id'])
+    failures = int(account['failure_count'] if 'failure_count' in account.keys() else 0)
+    successes = int(account['success_count'] if 'success_count' in account.keys() else 0)
+    age_bonus = 0 if account_tier(account) == 'new' else -5
+    return recent_tasks * 10 + failures * 4 - successes + age_bonus
+
+
+def proxy_selection_score(proxy):
+    failures = int(proxy['failure_count'] if 'failure_count' in proxy.keys() else 0)
+    successes = int(proxy['success_count'] if 'success_count' in proxy.keys() else 0)
+    return failures * 5 - successes
+
+
+def select_account_for_task(preferred_account_id=0):
+    with db() as conn:
+        placeholders = ','.join('?' for _ in ACCOUNT_USABLE_STATUSES)
+        if preferred_account_id:
+            account = conn.execute(
+                f"select * from accounts where id = ? and status in ({placeholders})",
+                (preferred_account_id, *ACCOUNT_USABLE_STATUSES),
+            ).fetchone()
+            if not account:
+                raise HTTPException(status_code=400, detail='X 账号会话失效，请重新登录或更新 Cookie。')
+            if not account_available_for_task(conn, account):
+                raise HTTPException(status_code=400, detail='所选 X 账号正在冷却或已达到配额，请稍后再试或使用自动分配。')
+            return account
+        rows = conn.execute(f"select * from accounts where status in ({placeholders})", tuple(ACCOUNT_USABLE_STATUSES)).fetchall()
+        candidates = [row for row in rows if account_available_for_task(conn, row)]
+        if not candidates:
+            raise HTTPException(status_code=400, detail='没有可分配的 X 账号：可用账号可能正在冷却、过于频繁使用或已达到今日配额。')
+        return sorted(candidates, key=lambda row: account_selection_score(conn, row))[0]
+
+
+def select_proxy_for_task(preferred_proxy_id=0, manual_proxy=''):
+    if manual_proxy:
+        return None
+    with db() as conn:
+        if preferred_proxy_id:
+            proxy = conn.execute("select * from proxies where id = ? and enabled = 1 and status = 'active'", (preferred_proxy_id,)).fetchone()
+            if not proxy:
+                raise HTTPException(status_code=400, detail='所选代理不可用，请先到代理页检测或换一个代理。')
+            if not proxy_available_for_task(proxy):
+                raise HTTPException(status_code=400, detail='所选代理正在冷却，请稍后再试或使用自动分配。')
+            return proxy
+        rows = conn.execute("select * from proxies where enabled = 1 and status = 'active'").fetchall()
+        candidates = [row for row in rows if proxy_available_for_task(row)]
+        if not candidates:
+            return None
+        return sorted(candidates, key=proxy_selection_score)[0]
+
+
+def reserve_resources_for_task(account_id, proxy_id=None):
+    with db() as conn:
+        conn.execute(
+            '''
+            update accounts
+            set last_used_at = ?, task_count = coalesce(task_count, 0) + 1
+            where id = ?
+            ''',
+            (now(), account_id),
+        )
+        if proxy_id:
+            conn.execute('update proxies set last_used_at = ? where id = ?', (now(), proxy_id))
+
+
 def validate_proxy(proxy_url):
     try:
         proxy_url = normalize_proxy_url(proxy_url)
@@ -736,10 +1275,27 @@ def account_health_status(ok, error=''):
 def update_account_health(account_id, ok, screen_name=None, error=''):
     status = account_health_status(ok, error)
     with db() as conn:
-        conn.execute(
-            'update accounts set status = ?, screen_name = coalesce(?, screen_name), last_checked_at = ?, last_error = ? where id = ?',
-            (status, screen_name, now(), None if ok else redact_sensitive(error), account_id),
-        )
+        if ok:
+            conn.execute(
+                '''
+                update accounts
+                set status = ?, screen_name = coalesce(?, screen_name), last_checked_at = ?, last_error = null,
+                    cooldown_until = null, success_count = coalesce(success_count, 0) + 1,
+                    tier = case when coalesce(success_count, 0) + 1 >= 5 then 'stable' else tier end
+                where id = ?
+                ''',
+                (status, screen_name, now(), account_id),
+            )
+        else:
+            conn.execute(
+                '''
+                update accounts
+                set status = ?, screen_name = coalesce(?, screen_name), last_checked_at = ?, last_error = ?,
+                    failure_count = coalesce(failure_count, 0) + 1
+                where id = ?
+                ''',
+                (status, screen_name, now(), redact_sensitive(error), account_id),
+            )
         return conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
 
 
@@ -747,7 +1303,13 @@ def update_proxy_health(proxy_id, ok, ip='', error=''):
     with db() as conn:
         if ok:
             conn.execute(
-                "update proxies set status = 'active', enabled = 1, detected_ip = ?, failure_count = 0, last_checked_at = ?, last_error = null where id = ?",
+                '''
+                update proxies
+                set status = 'active', enabled = 1, detected_ip = ?, failure_count = 0,
+                    success_count = coalesce(success_count, 0) + 1, cooldown_until = null,
+                    last_checked_at = ?, last_error = null
+                where id = ?
+                ''',
                 (ip or None, now(), proxy_id),
             )
         else:
@@ -788,6 +1350,69 @@ def get_active_proxy_or_error(proxy_id):
     if not proxy:
         raise HTTPException(status_code=400, detail='所选代理不可用，请先到代理页检测或换一个代理。')
     return proxy
+
+
+def resource_cooldown_for_error(error_type, resource_type):
+    if error_type == 'rate_limited':
+        return ACCOUNT_RATE_LIMIT_COOLDOWN_SECONDS if resource_type == 'account' else PROXY_RATE_LIMIT_COOLDOWN_SECONDS
+    if error_type in {'network_failed', 'partial_failed'}:
+        return ACCOUNT_TRANSIENT_COOLDOWN_SECONDS if resource_type == 'account' else PROXY_FAILURE_COOLDOWN_SECONDS
+    return 0
+
+
+def record_task_resource_result(task, status, error_type):
+    account_id = task.get('account_id')
+    proxy_id = task.get('proxy_id') or None
+    error_label = error_type or status
+    with db() as conn:
+        if status == 'completed':
+            if account_id:
+                conn.execute(
+                    '''
+                    update accounts
+                    set success_count = coalesce(success_count, 0) + 1, cooldown_until = null, last_error = null,
+                        tier = case when coalesce(success_count, 0) + 1 >= 5 then 'stable' else tier end
+                    where id = ?
+                    ''',
+                    (account_id,),
+                )
+            if proxy_id:
+                conn.execute(
+                    'update proxies set success_count = coalesce(success_count, 0) + 1, failure_count = 0, cooldown_until = null, last_error = null where id = ?',
+                    (proxy_id,),
+                )
+            return
+        if account_id and error_type:
+            account_cooldown = resource_cooldown_for_error(error_type, 'account')
+            account_status = 'auth_expired' if error_type == 'auth_expired' else None
+            if account_status:
+                conn.execute(
+                    '''
+                    update accounts
+                    set status = ?, failure_count = coalesce(failure_count, 0) + 1, last_error = ?, cooldown_until = null
+                    where id = ?
+                    ''',
+                    (account_status, error_label, account_id),
+                )
+            elif account_cooldown:
+                conn.execute(
+                    '''
+                    update accounts
+                    set failure_count = coalesce(failure_count, 0) + 1, last_error = ?, cooldown_until = ?
+                    where id = ?
+                    ''',
+                    (error_label, seconds_from_now(account_cooldown), account_id),
+                )
+        if proxy_id and error_type in {'network_failed', 'rate_limited'}:
+            proxy_cooldown = resource_cooldown_for_error(error_type, 'proxy')
+            conn.execute(
+                '''
+                update proxies
+                set failure_count = coalesce(failure_count, 0) + 1, last_error = ?, cooldown_until = ?
+                where id = ?
+                ''',
+                (error_label, seconds_from_now(proxy_cooldown), proxy_id),
+            )
 
 
 def build_runtime_settings(config: dict):
@@ -1205,12 +1830,21 @@ async def ensure_browser_login_session():
 
 
 def start_background_worker():
-    global worker_thread
+    global worker_thread, worker_threads, stop_worker
     with worker_lock:
-        if worker_thread and worker_thread.is_alive():
+        alive = [thread for thread in worker_threads if thread.is_alive()]
+        if alive:
+            worker_threads = alive
             return
-        worker_thread = threading.Thread(target=worker_loop, daemon=True)
-        worker_thread.start()
+        stop_worker = False
+        reset_stale_task_leases()
+        worker_threads = []
+        for index in range(WORKER_CONCURRENCY):
+            worker_id = f'worker-{index + 1}'
+            thread = threading.Thread(target=worker_loop, args=(worker_id,), daemon=True, name=f'tw-{worker_id}')
+            thread.start()
+            worker_threads.append(thread)
+        worker_thread = worker_threads[0] if worker_threads else None
 
 
 def start_health_worker():
@@ -1220,6 +1854,123 @@ def start_health_worker():
             return
         health_thread = threading.Thread(target=health_loop, daemon=True)
         health_thread.start()
+
+
+def start_schedule_worker():
+    global schedule_thread
+    with schedule_lock:
+        if schedule_thread and schedule_thread.is_alive():
+            return
+        schedule_thread = threading.Thread(target=schedule_loop, daemon=True)
+        schedule_thread.start()
+
+
+def schedule_loop():
+    while not stop_schedule_worker:
+        try:
+            run_due_schedules()
+        except Exception as exc:
+            append_operation_log('error', 'scheduler_error', f'定时调度检查失败: {exc}', error_type='scheduler_error')
+        slept = 0
+        while slept < 60 and not stop_schedule_worker:
+            time.sleep(1)
+            slept += 1
+
+
+def run_due_schedules():
+    current = now()
+    with db() as conn:
+        rows = conn.execute(
+            '''
+            select scheduled_tasks.*, users.username
+            from scheduled_tasks
+            join users on users.id = scheduled_tasks.user_id
+            where enabled = 1 and next_run_at is not null and next_run_at <= ?
+            order by next_run_at asc
+            ''',
+            (current,),
+        ).fetchall()
+    for row in rows:
+        trigger_schedule(row_to_dict(row))
+
+
+def create_queued_task(user_id, account_id, config, resource_mode='manual', schedule_id=None):
+    task_dir = TASKS_DIR / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
+    task_dir.mkdir(parents=True, exist_ok=True)
+    log_path = task_dir / 'task.log'
+    proxy_id = int(config.get('proxy_id') or 0) or None
+    with db() as conn:
+        cursor = conn.execute(
+            '''
+            insert into tasks
+              (user_id, account_id, proxy_id, schedule_id, resource_mode, task_type, title, config_json, status, output_dir, log_path, created_at)
+            values (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+            ''',
+            (
+                user_id,
+                account_id,
+                proxy_id,
+                schedule_id,
+                resource_mode,
+                config['task_type'],
+                title_from_config(config),
+                json.dumps(config, ensure_ascii=False),
+                str(task_dir),
+                str(log_path),
+                now(),
+            ),
+        )
+        task_id = cursor.lastrowid
+    reserve_resources_for_task(account_id, proxy_id)
+    append_operation_log(
+        'info',
+        'task_created',
+        f'任务已创建: {title_from_config(config)}',
+        task_id=task_id,
+        schedule_id=schedule_id,
+        details={'task_type': config.get('task_type'), 'target': task_target_label(config), 'resource_mode': resource_mode},
+    )
+    start_background_worker()
+    return task_id
+
+
+def trigger_schedule(schedule):
+    schedule_id = schedule['id']
+    try:
+        config = json.loads(schedule['config_json'] or '{}')
+        with db() as conn:
+            active = conn.execute(
+                "select id from tasks where schedule_id = ? and status in ('queued', 'running') limit 1",
+                (schedule_id,),
+            ).fetchone()
+        if active:
+            append_operation_log(
+                'warning',
+                'schedule_skipped',
+                f'定时计划跳过，本计划已有未结束任务 #{active["id"]}',
+                task_id=active['id'],
+                schedule_id=schedule_id,
+            )
+            next_run = next_schedule_run(schedule['schedule_type'], schedule['run_time'], schedule.get('weekdays'))
+            with db() as conn:
+                conn.execute('update scheduled_tasks set next_run_at = ?, updated_at = ? where id = ?', (next_run, now(), schedule_id))
+            return
+        task_id = create_queued_task(schedule['user_id'], schedule['account_id'], config, resource_mode='scheduled', schedule_id=schedule_id)
+        next_run = next_schedule_run(schedule['schedule_type'], schedule['run_time'], schedule.get('weekdays'))
+        with db() as conn:
+            conn.execute(
+                'update scheduled_tasks set last_run_at = ?, next_run_at = ?, last_task_id = ?, updated_at = ? where id = ?',
+                (now(), next_run, task_id, now(), schedule_id),
+            )
+        append_operation_log('info', 'schedule_triggered', f'定时计划已生成任务 #{task_id}', task_id=task_id, schedule_id=schedule_id)
+    except Exception as exc:
+        append_operation_log('error', 'schedule_failed', f'定时计划触发失败: {exc}', schedule_id=schedule_id, error_type='schedule_failed')
+        try:
+            next_run = next_schedule_run(schedule['schedule_type'], schedule['run_time'], schedule.get('weekdays'))
+            with db() as conn:
+                conn.execute('update scheduled_tasks set next_run_at = ?, updated_at = ? where id = ?', (next_run, now(), schedule_id))
+        except Exception:
+            pass
 
 
 def health_loop():
@@ -1290,26 +2041,140 @@ def should_retry_task(error_type):
     return error_type in {'network_failed', 'rate_limited'}
 
 
-def worker_loop():
-    while not stop_worker:
-        with db() as conn:
-            task = conn.execute(
+def parse_log_metric(log_text, metric):
+    patterns = {
+        'api_calls': [r'共调用(\d+)次API', r'API 调用\s*(\d+)\s*次'],
+        'downloads': [r'共下载(\d+)份图片/视频', r'下载\s*(\d+)\s*份文件'],
+    }
+    for pattern in patterns.get(metric, []):
+        match = re.search(pattern, log_text)
+        if match:
+            return int(match.group(1))
+    return 0
+
+
+def reset_stale_task_leases():
+    cutoff = seconds_from_now(-TASK_LEASE_TIMEOUT_SECONDS)
+    with db() as conn:
+        conn.execute(
+            '''
+            update tasks
+            set status = 'queued',
+                error = coalesce(error, 'Worker heartbeat timeout, task returned to queue'),
+                last_error_type = coalesce(last_error_type, 'worker_timeout'),
+                locked_by = null,
+                locked_at = null,
+                heartbeat_at = null,
+                process_id = null
+            where status = 'running'
+              and heartbeat_at is not null
+              and heartbeat_at < ?
+            ''',
+            (cutoff,),
+        )
+
+
+def acquire_queued_task(worker_id):
+    with db() as conn:
+        conn.execute('begin immediate')
+        try:
+            rows = conn.execute(
                 '''
                 select * from tasks
                 where status = 'queued'
                   and (last_retry_at is null or datetime(last_retry_at, '+' || ? || ' seconds') <= datetime('now', 'localtime'))
                 order by id asc
-                limit 1
+                limit 20
                 ''',
                 (TASK_RETRY_DELAY_SECONDS,),
-            ).fetchone()
-        if not task:
-            time.sleep(1)
-            continue
-        run_task(row_to_dict(task))
+            ).fetchall()
+            for row in rows:
+                candidate = row_to_dict(row)
+                if task_should_wait_for_resource(candidate, conn):
+                    continue
+                current = now()
+                cursor = conn.execute(
+                    '''
+                    update tasks
+                    set status = 'running',
+                        locked_by = ?,
+                        locked_at = ?,
+                        heartbeat_at = ?,
+                        started_at = coalesce(started_at, ?),
+                        error = null
+                    where id = ? and status = 'queued'
+                    ''',
+                    (worker_id, current, current, current, candidate['id']),
+                )
+                if cursor.rowcount:
+                    conn.commit()
+                    with db() as read_conn:
+                        refreshed = read_conn.execute('select * from tasks where id = ?', (candidate['id'],)).fetchone()
+                    return row_to_dict(refreshed)
+            conn.commit()
+            return None
+        except Exception:
+            conn.rollback()
+            raise
 
 
-def run_task(task):
+def heartbeat_task(task_id, worker_id, process_id=None):
+    with db() as conn:
+        if process_id:
+            conn.execute(
+                'update tasks set heartbeat_at = ?, process_id = ? where id = ? and locked_by = ?',
+                (now(), process_id, task_id, worker_id),
+            )
+        else:
+            conn.execute('update tasks set heartbeat_at = ? where id = ? and locked_by = ?', (now(), task_id, worker_id))
+
+
+def release_task_lease(task_id, worker_id):
+    with db() as conn:
+        conn.execute(
+            'update tasks set locked_by = null, locked_at = null, heartbeat_at = null where id = ? and locked_by = ?',
+            (task_id, worker_id),
+        )
+
+
+def worker_loop(worker_id='worker-1'):
+    while not stop_worker:
+        try:
+            reset_stale_task_leases()
+            task = acquire_queued_task(worker_id)
+            if not task:
+                time.sleep(1)
+                continue
+            run_task(task, worker_id)
+        except Exception as exc:
+            append_operation_log('error', 'worker_error', f'{worker_id} 执行异常: {redact_sensitive(str(exc))}', error_type='worker_error')
+            time.sleep(2)
+
+
+def task_cancelled(task_id):
+    with db() as conn:
+        row = conn.execute('select status from tasks where id = ?', (task_id,)).fetchone()
+    return bool(row and row['status'] == 'cancelled')
+
+
+def task_should_wait_for_resource(task, conn=None):
+    if not task.get('account_id'):
+        return False
+    def check(active_conn):
+        placeholders = ','.join('?' for _ in ACCOUNT_USABLE_STATUSES)
+        account = active_conn.execute(
+            f"select * from accounts where id = ? and status in ({placeholders})",
+            (task['account_id'], *ACCOUNT_USABLE_STATUSES),
+        ).fetchone()
+        proxy = active_conn.execute("select * from proxies where id = ? and enabled = 1 and status = 'active'", (task['proxy_id'],)).fetchone() if task.get('proxy_id') else None
+        return bool((account and in_cooldown(account)) or (task.get('proxy_id') and (not proxy or in_cooldown(proxy))))
+    if conn:
+        return check(conn)
+    with db() as active_conn:
+        return check(active_conn)
+
+
+def run_task(task, worker_id='worker-1'):
     output_dir = Path(task['output_dir'])
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = Path(task['log_path'])
@@ -1322,12 +2187,24 @@ def run_task(task):
             f"select * from accounts where id = ? and status in ({placeholders})",
             (task['account_id'], *ACCOUNT_USABLE_STATUSES),
         ).fetchone()
+        proxy = None
+        if task.get('proxy_id'):
+            proxy = conn.execute("select * from proxies where id = ? and enabled = 1 and status = 'active'", (task['proxy_id'],)).fetchone()
     if not account:
         with db() as conn:
             conn.execute(
-                "update tasks set status = 'auth_expired', error = ?, last_error_type = ?, finished_at = ?, process_id = null where id = ?",
+                "update tasks set status = 'auth_expired', error = ?, last_error_type = ?, finished_at = ?, process_id = null, locked_by = null, locked_at = null, heartbeat_at = null where id = ?",
                 ('未找到可用 X 账号', 'auth_expired', now(), task['id']),
             )
+        append_operation_log('error', 'task_failed', '未找到可用 X 账号', task_id=task['id'], schedule_id=task.get('schedule_id'), error_type='auth_expired')
+        return
+    if task_should_wait_for_resource(task):
+        with db() as conn:
+            conn.execute(
+                "update tasks set status = 'queued', error = ?, last_retry_at = ?, last_error_type = ?, process_id = null, locked_by = null, locked_at = null, heartbeat_at = null where id = ?",
+                ('账号或代理正在冷却，稍后自动重试', now(), 'rate_limited', task['id']),
+            )
+        append_operation_log('warning', 'task_waiting_resource', '账号或代理正在冷却，任务保持排队', task_id=task['id'], schedule_id=task.get('schedule_id'), error_type='rate_limited')
         return
 
     with open(config_path, 'w', encoding='utf-8') as f:
@@ -1356,6 +2233,7 @@ def run_task(task):
     with open(log_path, 'a', encoding='utf-8', errors='replace') as log_file:
         log_file.write(f'[{now()}] 启动任务 #{task["id"]}: {task["title"]}\n')
         log_file.flush()
+        append_operation_log('info', 'task_started', f'任务开始执行: {task["title"]}', task_id=task['id'], schedule_id=task.get('schedule_id'))
         proc = subprocess.Popen(
             cmd,
             cwd=str(BASE_DIR),
@@ -1367,12 +2245,32 @@ def run_task(task):
         )
         with db() as conn:
             conn.execute(
-                "update tasks set status = 'running', started_at = ?, process_id = ? where id = ?",
-                (now(), proc.pid, task['id']),
+                "update tasks set status = 'running', started_at = coalesce(started_at, ?), process_id = ?, locked_by = ?, heartbeat_at = ? where id = ?",
+                (now(), proc.pid, worker_id, now(), task['id']),
             )
-        return_code = proc.wait()
+        while True:
+            return_code = proc.poll()
+            heartbeat_task(task['id'], worker_id, proc.pid)
+            if return_code is not None:
+                break
+            if task_cancelled(task['id']):
+                try:
+                    if os.name == 'nt':
+                        subprocess.run(['taskkill', '/PID', str(proc.pid), '/T', '/F'], check=False, capture_output=True)
+                    else:
+                        proc.terminate()
+                except Exception:
+                    pass
+                return_code = proc.wait()
+                break
+            time.sleep(TASK_HEARTBEAT_SECONDS)
         log_file.write(f'\n[{now()}] 子进程退出码: {return_code}\n')
+        append_operation_log('info' if return_code == 0 else 'error', 'task_process_exit', f'子进程退出码: {return_code}', task_id=task['id'], schedule_id=task.get('schedule_id'), details={'return_code': return_code})
     log_text = read_log(log_path, 50000)
+    has_partial_result = False
+    if task_cancelled(task['id']):
+        release_task_lease(task['id'], worker_id)
+        return
     if return_code == 0:
         status, error = 'completed', None
         error_type = None
@@ -1388,22 +2286,68 @@ def run_task(task):
     max_retries = int(task.get('max_retries') or 2)
     if return_code != 0 and not has_partial_result and should_retry_task(error_type) and retry_count < max_retries:
         next_retry_count = retry_count + 1
+        record_task_resource_result(task, status, error_type)
         with open(log_path, 'a', encoding='utf-8', errors='replace') as log_file:
             log_file.write(f'\n[{now()}] {error}，准备第 {next_retry_count}/{max_retries} 次自动重试。\n')
         with db() as conn:
             conn.execute(
-                "update tasks set status = 'queued', error = ?, retry_count = ?, last_retry_at = ?, last_error_type = ?, process_id = null where id = ?",
+                "update tasks set status = 'queued', error = ?, retry_count = ?, last_retry_at = ?, last_error_type = ?, process_id = null, locked_by = null, locked_at = null, heartbeat_at = null where id = ?",
                 (error, next_retry_count, now(), error_type, task['id']),
             )
+        append_operation_log(
+            'warning',
+            'task_retry_scheduled',
+            f'{error}，准备第 {next_retry_count}/{max_retries} 次自动重试',
+            task_id=task['id'],
+            schedule_id=task.get('schedule_id'),
+            error_type=error_type,
+        )
         return
+    index_counts = index_task_outputs(task)
+    summary = task_summary(task)
     with db() as conn:
         conn.execute(
-            'update tasks set status = ?, error = ?, last_error_type = ?, finished_at = ?, process_id = null where id = ?',
-            (status, error, error_type, now(), task['id']),
+            '''
+            update tasks
+            set status = ?,
+                error = ?,
+                last_error_type = ?,
+                finished_at = ?,
+                process_id = null,
+                locked_by = null,
+                locked_at = null,
+                heartbeat_at = null,
+                progress_total = ?,
+                progress_done = ?,
+                api_calls = ?,
+                download_count = ?
+            where id = ?
+            ''',
+            (
+                status,
+                error,
+                error_type,
+                now(),
+                max(summary['media_records'], summary['media_files'], index_counts['media_assets']),
+                max(summary['media_files'], index_counts['media_assets']),
+                parse_log_metric(log_text, 'api_calls'),
+                parse_log_metric(log_text, 'downloads'),
+                task['id'],
+            ),
         )
         refreshed = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id where tasks.id = ?', (task['id'],)).fetchone()
+    record_task_resource_result(task, status, error_type)
     if refreshed:
         write_summary_report(refreshed)
+    append_operation_log(
+        'info' if status == 'completed' else 'error',
+        'task_finished',
+        '任务执行完成' if status == 'completed' else error or '任务执行失败',
+        task_id=task['id'],
+        schedule_id=task.get('schedule_id'),
+        error_type=error_type,
+        details={'status': status},
+    )
 
 
 @app.on_event('startup')
@@ -1411,13 +2355,15 @@ def on_startup():
     init_db()
     start_background_worker()
     start_health_worker()
+    start_schedule_worker()
 
 
 @app.on_event('shutdown')
 def on_shutdown():
-    global stop_worker, stop_health_worker
+    global stop_worker, stop_health_worker, stop_schedule_worker
     stop_worker = True
     stop_health_worker = True
+    stop_schedule_worker = True
     stop_main_process()
 
 
@@ -1630,6 +2576,109 @@ def title_from_config(config):
     return f'{names.get(config.get("task_type"), config.get("task_type"))} - {target}'
 
 
+def build_schedule_config(data):
+    task_type = data.get('task_type') or 'benchmark_account'
+    if task_type not in {'user_media', 'benchmark_account'}:
+        raise HTTPException(status_code=400, detail='定时任务当前只支持博主采集')
+    config = {
+        'task_type': task_type,
+        'targets': data.get('targets') or '',
+        'time_range': data.get('time_range') or task_default_time_range(),
+        'max_concurrent_requests': int(data.get('max_concurrent_requests') or 8),
+        'has_retweet': bool(data.get('has_retweet')),
+        'high_lights': bool(data.get('high_lights')),
+        'likes': bool(data.get('likes')),
+        'has_video': bool(data.get('has_video', True)),
+        'down_log': bool(data.get('down_log')),
+        'auto_sync': bool(data.get('auto_sync')),
+        'md_output': bool(data.get('md_output')),
+        'image_format': data.get('image_format') or 'orig',
+        'media_count_limit': int(data.get('media_count_limit') or 350),
+        'proxy': data.get('proxy') or '',
+        'tweet_limit': parse_int_field(data.get('tweet_limit'), 10, '拉取条数'),
+    }
+    apply_proxy_selection(config, data.get('proxy_id'))
+    validate_task_config(config)
+    return config
+
+
+def get_schedule_or_404(schedule_id, user):
+    with db() as conn:
+        row = conn.execute(
+            'select scheduled_tasks.*, users.username from scheduled_tasks join users on users.id = scheduled_tasks.user_id where scheduled_tasks.id = ?',
+            (schedule_id,),
+        ).fetchone()
+    if not row or (user['role'] != 'admin' and row['user_id'] != user['id']):
+        raise HTTPException(status_code=404, detail='Schedule not found')
+    return row
+
+
+ATTENTION_TASK_STATUSES = {'failed', 'cancelled', 'partial_failed', 'rate_limited', 'auth_expired', 'network_failed', 'target_unavailable', 'api_changed'}
+DEFAULT_STATUS_COUNTS = {
+    'queued': 0,
+    'running': 0,
+    'completed': 0,
+    'failed': 0,
+    'cancelled': 0,
+    'partial_failed': 0,
+    'rate_limited': 0,
+    'auth_expired': 0,
+    'network_failed': 0,
+    'target_unavailable': 0,
+    'api_changed': 0,
+}
+
+
+def dashboard_task_item(row, summary, config):
+    return {
+        'id': row['id'],
+        'title': row['title'],
+        'task_type': row['task_type'],
+        'status': row['status'],
+        'created_at': row['created_at'],
+        'started_at': row['started_at'],
+        'finished_at': row['finished_at'],
+        'worker_id': row['locked_by'] if 'locked_by' in row.keys() else None,
+        'progress': {
+            'total': row['progress_total'] if 'progress_total' in row.keys() else 0,
+            'done': row['progress_done'] if 'progress_done' in row.keys() else 0,
+        },
+        'indexed_counts': task_index_counts(row['id']),
+        'target': task_target_label(config),
+        'summary': summary,
+        'error': row['error'],
+        'last_error_type': row['last_error_type'] if 'last_error_type' in row.keys() else None,
+        'retry_count': row['retry_count'] if 'retry_count' in row.keys() else 0,
+        'max_retries': row['max_retries'] if 'max_retries' in row.keys() else 2,
+    }
+
+
+def dashboard_resource_summary(conn, accounts, proxies):
+    account_summary = {'total': len(accounts), 'usable': 0, 'cooling': 0, 'expired': 0, 'warning': 0}
+    for account in accounts:
+        status = account['status']
+        if status == ACCOUNT_EXPIRED_STATUS:
+            account_summary['expired'] += 1
+        elif in_cooldown(account):
+            account_summary['cooling'] += 1
+        elif status in ACCOUNT_USABLE_STATUSES and account_available_for_task(conn, account):
+            account_summary['usable'] += 1
+        else:
+            account_summary['warning'] += 1
+
+    proxy_summary = {'total': len(proxies), 'usable': 0, 'cooling': 0, 'disabled': 0, 'warning': 0}
+    for proxy in proxies:
+        if not proxy['enabled']:
+            proxy_summary['disabled'] += 1
+        elif in_cooldown(proxy):
+            proxy_summary['cooling'] += 1
+        elif proxy['status'] == 'active' and proxy_available_for_task(proxy):
+            proxy_summary['usable'] += 1
+        else:
+            proxy_summary['warning'] += 1
+    return {'accounts': account_summary, 'proxies': proxy_summary}
+
+
 def dashboard_payload(user):
     with db() as conn:
         if user['role'] == 'admin':
@@ -1640,7 +2689,14 @@ def dashboard_payload(user):
                 (user['id'],),
             ).fetchall()
         accounts = conn.execute('select status, count(*) as count from accounts group by status').fetchall()
+        account_rows = conn.execute('select * from accounts order by id desc').fetchall()
+        proxy_rows = conn.execute('select * from proxies order by id desc').fetchall()
+        resources = dashboard_resource_summary(conn, account_rows, proxy_rows)
     tasks_payload = []
+    active_tasks = []
+    attention_tasks = []
+    recent_outputs = []
+    status_counts = dict(DEFAULT_STATUS_COUNTS)
     totals = {
         'tasks': len(rows),
         'running': 0,
@@ -1654,11 +2710,12 @@ def dashboard_payload(user):
     }
     for row in rows:
         summary = task_summary(row)
+        status_counts[row['status']] = status_counts.get(row['status'], 0) + 1
         if row['status'] in {'running', 'queued'}:
             totals['running'] += 1
         if row['status'] == 'completed':
             totals['completed'] += 1
-        if row['status'] in {'failed', 'cancelled', 'partial_failed', 'rate_limited', 'auth_expired', 'network_failed', 'target_unavailable', 'api_changed'}:
+        if row['status'] in ATTENTION_TASK_STATUSES:
             totals['failed'] += 1
         totals['files'] += summary['files']
         totals['media_files'] += summary['media_files']
@@ -1667,18 +2724,22 @@ def dashboard_payload(user):
             config = json.loads(row['config_json'])
         except Exception:
             config = {}
-        tasks_payload.append({
-            'id': row['id'],
-            'title': row['title'],
-            'task_type': row['task_type'],
-            'status': row['status'],
-            'created_at': row['created_at'],
-            'target': task_target_label(config),
-            'summary': summary,
-        })
+        item = dashboard_task_item(row, summary, config)
+        tasks_payload.append(item)
+        if row['status'] in {'running', 'queued'} and len(active_tasks) < 5:
+            active_tasks.append(item)
+        if row['status'] in ATTENTION_TASK_STATUSES and len(attention_tasks) < 5:
+            attention_tasks.append(item)
+        if row['status'] == 'completed' and len(recent_outputs) < 6:
+            recent_outputs.append(item)
     return {
         'totals': totals,
         'accounts': {row['status']: row['count'] for row in accounts},
+        'status_counts': status_counts,
+        'resources': resources,
+        'active_tasks': active_tasks,
+        'attention_tasks': attention_tasks,
+        'recent_outputs': recent_outputs,
         'recent_tasks': tasks_payload[:8],
         'templates': demo_templates(),
         'compliance_notes': [
@@ -1725,38 +2786,22 @@ def demo_templates():
 async def create_task(request: Request, user=Depends(require_user)):
     form = await request.form()
     accounts = active_accounts()
-    account_id = int(form.get('account_id') or 0)
-    if not account_id:
-        return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': '请先选择 X 账号', 'default_time_range': task_default_time_range()}, status_code=400)
+    requested_account_id = int(form.get('account_id') or 0)
     try:
         config = build_task_config(form)
-        get_active_account_or_error(account_id)
-        apply_proxy_selection(config, form.get('proxy_id'))
+        account = select_account_for_task(requested_account_id)
+        account_id = account['id']
+        proxy = select_proxy_for_task(int(form.get('proxy_id') or 0), config.get('proxy') or '')
+        if proxy:
+            config['proxy'] = normalize_proxy_url(proxy['proxy'])
+            config['proxy_id'] = proxy['id']
+        else:
+            apply_proxy_selection(config, form.get('proxy_id'))
         validate_task_config(config)
     except HTTPException as exc:
         config = locals().get('config') or {'time_range': form.get('time_range') or task_default_time_range()}
         return templates.TemplateResponse('task_form.html', {'request': request, 'user': user, 'accounts': accounts, 'error': exc.detail, 'default_time_range': config.get('time_range') or task_default_time_range()}, status_code=400)
-    task_dir = TASKS_DIR / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-    task_dir.mkdir(parents=True, exist_ok=True)
-    log_path = task_dir / 'task.log'
-    with db() as conn:
-        conn.execute(
-            '''
-            insert into tasks (user_id, account_id, task_type, title, config_json, status, output_dir, log_path, created_at)
-            values (?, ?, ?, ?, ?, 'queued', ?, ?, ?)
-            ''',
-            (
-                user['id'],
-                account_id,
-                config['task_type'],
-                title_from_config(config),
-                json.dumps(config, ensure_ascii=False),
-                str(task_dir),
-                str(log_path),
-                now(),
-            ),
-        )
-    start_background_worker()
+    create_queued_task(user['id'], account_id, config, resource_mode='manual' if requested_account_id else 'auto')
     return RedirectResponse('/tasks', status_code=303)
 
 
@@ -1779,7 +2824,8 @@ def delete_task_row(task_id, user):
     if task['status'] in {'queued', 'running'}:
         if task['status'] == 'queued':
             with db() as conn:
-                conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ?, last_error_type = ? where id = ?", (now(), '用户删除任务', 'cancelled', task_id))
+                conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ?, last_error_type = ?, locked_by = null, locked_at = null, heartbeat_at = null where id = ?", (now(), '用户删除任务', 'cancelled', task_id))
+            append_operation_log('warning', 'task_cancelled', '用户删除排队任务', task_id=task_id, schedule_id=task['schedule_id'] if 'schedule_id' in task.keys() else None, error_type='cancelled')
         elif task['process_id']:
             try:
                 if os.name == 'nt':
@@ -1789,10 +2835,12 @@ def delete_task_row(task_id, user):
             except Exception:
                 pass
             with db() as conn:
-                conn.execute("update tasks set status = 'cancelled', finished_at = ?, process_id = null, error = ?, last_error_type = ? where id = ?", (now(), '用户删除任务', 'cancelled', task_id))
+                conn.execute("update tasks set status = 'cancelled', finished_at = ?, process_id = null, error = ?, last_error_type = ?, locked_by = null, locked_at = null, heartbeat_at = null where id = ?", (now(), '用户删除任务', 'cancelled', task_id))
+            append_operation_log('warning', 'task_cancelled', '用户删除运行中任务', task_id=task_id, schedule_id=task['schedule_id'] if 'schedule_id' in task.keys() else None, error_type='cancelled')
     remove_task_files(task)
     with db() as conn:
         conn.execute('delete from tasks where id = ?', (task_id,))
+    append_operation_log('warning', 'task_deleted', f'任务已删除: #{task_id}', task_id=task_id, schedule_id=task['schedule_id'] if 'schedule_id' in task.keys() else None)
     return {'ok': True}
 
 
@@ -1819,7 +2867,8 @@ def cancel_task(task_id: int, user=Depends(require_user)):
     task = get_task_or_404(task_id, user)
     if task['status'] == 'queued':
         with db() as conn:
-            conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ?, last_error_type = ? where id = ?", (now(), '用户取消', 'cancelled', task_id))
+            conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ?, last_error_type = ?, locked_by = null, locked_at = null, heartbeat_at = null where id = ?", (now(), '用户取消', 'cancelled', task_id))
+        append_operation_log('warning', 'task_cancelled', '用户取消排队任务', task_id=task_id, schedule_id=task['schedule_id'] if 'schedule_id' in task.keys() else None, error_type='cancelled')
     elif task['status'] == 'running' and task['process_id']:
         try:
             if os.name == 'nt':
@@ -1829,7 +2878,8 @@ def cancel_task(task_id: int, user=Depends(require_user)):
         except Exception:
             pass
         with db() as conn:
-            conn.execute("update tasks set status = 'cancelled', finished_at = ?, process_id = null, error = ?, last_error_type = ? where id = ?", (now(), '用户取消', 'cancelled', task_id))
+            conn.execute("update tasks set status = 'cancelled', finished_at = ?, process_id = null, error = ?, last_error_type = ?, locked_by = null, locked_at = null, heartbeat_at = null where id = ?", (now(), '用户取消', 'cancelled', task_id))
+        append_operation_log('warning', 'task_cancelled', '用户取消运行中任务', task_id=task_id, schedule_id=task['schedule_id'] if 'schedule_id' in task.keys() else None, error_type='cancelled')
     return RedirectResponse(f'/tasks/{task_id}', status_code=303)
 
 
@@ -2038,13 +3088,159 @@ def api_tasks(user=Depends(require_api_user)):
     return {'tasks': [task_payload(row) for row in rows]}
 
 
-@app.post('/api/tasks')
-async def api_create_task(request: Request, user=Depends(require_api_user)):
+@app.get('/api/schedules')
+def api_schedules(user=Depends(require_api_user)):
+    with db() as conn:
+        if user['role'] == 'admin':
+            rows = conn.execute('select scheduled_tasks.*, users.username from scheduled_tasks join users on users.id = scheduled_tasks.user_id order by scheduled_tasks.id desc').fetchall()
+        else:
+            rows = conn.execute(
+                'select scheduled_tasks.*, users.username from scheduled_tasks join users on users.id = scheduled_tasks.user_id where user_id = ? order by scheduled_tasks.id desc',
+                (user['id'],),
+            ).fetchall()
+    return {'schedules': [schedule_payload(row) for row in rows]}
+
+
+@app.post('/api/schedules')
+async def api_create_schedule(request: Request, user=Depends(require_api_user)):
     data = await request.json()
     account_id = int(data.get('account_id') or 0)
     if not account_id:
         raise HTTPException(status_code=400, detail='请先选择 X 账号')
     get_active_account_or_error(account_id)
+    config = build_schedule_config(data)
+    schedule_type = str(data.get('schedule_type') or 'daily').strip()
+    if schedule_type not in {'daily', 'weekly'}:
+        raise HTTPException(status_code=400, detail='定时类型只能是 daily 或 weekly')
+    run_time = validate_schedule_time(data.get('run_time') or '09:00')
+    weekdays = normalize_weekdays(data.get('weekdays') or [])
+    if schedule_type == 'weekly' and not weekdays:
+        raise HTTPException(status_code=400, detail='每周任务至少选择一个星期')
+    next_run = next_schedule_run(schedule_type, run_time, weekdays)
+    with db() as conn:
+        cursor = conn.execute(
+            '''
+            insert into scheduled_tasks
+              (user_id, account_id, proxy_id, name, enabled, schedule_type, run_time, weekdays, config_json, next_run_at, last_run_at, last_task_id, created_at, updated_at)
+            values (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, null, null, ?, ?)
+            ''',
+            (
+                user['id'],
+                account_id,
+                config.get('proxy_id'),
+                (data.get('name') or '定时采集').strip(),
+                schedule_type,
+                run_time,
+                ','.join(str(day) for day in weekdays),
+                json.dumps(config, ensure_ascii=False),
+                next_run,
+                now(),
+                now(),
+            ),
+        )
+        schedule_id = cursor.lastrowid
+        row = conn.execute('select scheduled_tasks.*, users.username from scheduled_tasks join users on users.id = scheduled_tasks.user_id where scheduled_tasks.id = ?', (schedule_id,)).fetchone()
+    append_operation_log('info', 'schedule_created', f'创建定时任务: {row["name"]}', schedule_id=schedule_id, details={'schedule_type': schedule_type, 'run_time': run_time})
+    return {'schedule': schedule_payload(row)}
+
+
+@app.patch('/api/schedules/{schedule_id}')
+async def api_update_schedule(schedule_id: int, request: Request, user=Depends(require_api_user)):
+    schedule = get_schedule_or_404(schedule_id, user)
+    data = await request.json()
+    account_id = int(data.get('account_id') or schedule['account_id'])
+    get_active_account_or_error(account_id)
+    config = build_schedule_config({**json.loads(schedule['config_json'] or '{}'), **data, 'account_id': account_id})
+    schedule_type = str(data.get('schedule_type') or schedule['schedule_type']).strip()
+    if schedule_type not in {'daily', 'weekly'}:
+        raise HTTPException(status_code=400, detail='定时类型只能是 daily 或 weekly')
+    run_time = validate_schedule_time(data.get('run_time') or schedule['run_time'])
+    weekdays = normalize_weekdays(data.get('weekdays') if 'weekdays' in data else schedule['weekdays'])
+    if schedule_type == 'weekly' and not weekdays:
+        raise HTTPException(status_code=400, detail='每周任务至少选择一个星期')
+    next_run = next_schedule_run(schedule_type, run_time, weekdays)
+    with db() as conn:
+        conn.execute(
+            '''
+            update scheduled_tasks
+            set account_id = ?, proxy_id = ?, name = ?, enabled = ?, schedule_type = ?, run_time = ?, weekdays = ?, config_json = ?, next_run_at = ?, updated_at = ?
+            where id = ?
+            ''',
+            (
+                account_id,
+                config.get('proxy_id'),
+                (data.get('name') or schedule['name']).strip(),
+                1 if data.get('enabled', schedule['enabled']) else 0,
+                schedule_type,
+                run_time,
+                ','.join(str(day) for day in weekdays),
+                json.dumps(config, ensure_ascii=False),
+                next_run,
+                now(),
+                schedule_id,
+            ),
+        )
+        row = conn.execute('select scheduled_tasks.*, users.username from scheduled_tasks join users on users.id = scheduled_tasks.user_id where scheduled_tasks.id = ?', (schedule_id,)).fetchone()
+    append_operation_log('info', 'schedule_updated', f'更新定时任务: {row["name"]}', schedule_id=schedule_id, details={'schedule_type': schedule_type, 'run_time': run_time})
+    return {'schedule': schedule_payload(row)}
+
+
+@app.post('/api/schedules/{schedule_id}/toggle')
+def api_toggle_schedule(schedule_id: int, user=Depends(require_api_user)):
+    schedule = get_schedule_or_404(schedule_id, user)
+    enabled = 0 if schedule['enabled'] else 1
+    with db() as conn:
+        conn.execute('update scheduled_tasks set enabled = ?, updated_at = ? where id = ?', (enabled, now(), schedule_id))
+        row = conn.execute('select scheduled_tasks.*, users.username from scheduled_tasks join users on users.id = scheduled_tasks.user_id where scheduled_tasks.id = ?', (schedule_id,)).fetchone()
+    append_operation_log('info', 'schedule_toggled', f'定时任务已{"启用" if enabled else "停用"}: {row["name"]}', schedule_id=schedule_id, details={'enabled': bool(enabled)})
+    return {'schedule': schedule_payload(row)}
+
+
+@app.delete('/api/schedules/{schedule_id}')
+def api_delete_schedule(schedule_id: int, user=Depends(require_api_user)):
+    schedule = get_schedule_or_404(schedule_id, user)
+    with db() as conn:
+        conn.execute('delete from scheduled_tasks where id = ?', (schedule_id,))
+    append_operation_log('warning', 'schedule_deleted', f'删除定时任务: {schedule["name"]}', schedule_id=schedule_id)
+    return {'ok': True}
+
+
+@app.get('/api/operation-logs')
+def api_operation_logs(user=Depends(require_api_user), task_id: int | None = None, schedule_id: int | None = None, level: str | None = None, limit: int = 200):
+    limit = max(1, min(int(limit or 200), 500))
+    clauses = []
+    params = []
+    if task_id:
+        clauses.append('task_id = ?')
+        params.append(task_id)
+    if schedule_id:
+        clauses.append('schedule_id = ?')
+        params.append(schedule_id)
+    if level:
+        clauses.append('level = ?')
+        params.append(level)
+    if user['role'] != 'admin':
+        clauses.append(
+            '''
+            (
+              task_id in (select id from tasks where user_id = ?)
+              or schedule_id in (select id from scheduled_tasks where user_id = ?)
+            )
+            '''
+        )
+        params.extend([user['id'], user['id']])
+    where = f"where {' and '.join(clauses)}" if clauses else ''
+    with db() as conn:
+        rows = conn.execute(f'select * from operation_logs {where} order by id desc limit ?', (*params, limit)).fetchall()
+    return {'logs': [operation_log_payload(row) for row in rows]}
+
+
+@app.post('/api/tasks')
+async def api_create_task(request: Request, user=Depends(require_api_user)):
+    data = await request.json()
+    requested_account_id = int(data.get('account_id') or 0)
+    account = select_account_for_task(requested_account_id)
+    account_id = account['id']
     config = {
         'task_type': data.get('task_type'),
         'targets': data.get('targets') or '',
@@ -2068,30 +3264,14 @@ async def api_create_task(request: Request, user=Depends(require_api_user)):
             'search_advanced': data.get('search_advanced') or '',
         }
     )
-    apply_proxy_selection(config, data.get('proxy_id'))
+    proxy = select_proxy_for_task(int(data.get('proxy_id') or 0), config.get('proxy') or '')
+    if proxy:
+        config['proxy'] = normalize_proxy_url(proxy['proxy'])
+        config['proxy_id'] = proxy['id']
+    else:
+        apply_proxy_selection(config, data.get('proxy_id'))
     validate_task_config(config)
-    task_dir = TASKS_DIR / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
-    task_dir.mkdir(parents=True, exist_ok=True)
-    log_path = task_dir / 'task.log'
-    with db() as conn:
-        cursor = conn.execute(
-            '''
-            insert into tasks (user_id, account_id, task_type, title, config_json, status, output_dir, log_path, created_at)
-            values (?, ?, ?, ?, ?, 'queued', ?, ?, ?)
-            ''',
-            (
-                user['id'],
-                account_id,
-                config['task_type'],
-                title_from_config(config),
-                json.dumps(config, ensure_ascii=False),
-                str(task_dir),
-                str(log_path),
-                now(),
-            ),
-        )
-        task_id = cursor.lastrowid
-    start_background_worker()
+    task_id = create_queued_task(user['id'], account_id, config, resource_mode='manual' if requested_account_id else 'auto')
     with db() as conn:
         task = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id where tasks.id = ?', (task_id,)).fetchone()
     return {'task': task_payload(task, include_config=True)}
@@ -2114,7 +3294,7 @@ def api_cancel_task(task_id: int, user=Depends(require_api_user)):
     task = get_task_or_404(task_id, user)
     if task['status'] == 'queued':
         with db() as conn:
-            conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ?, last_error_type = ? where id = ?", (now(), '用户取消', 'cancelled', task_id))
+            conn.execute("update tasks set status = 'cancelled', finished_at = ?, error = ?, last_error_type = ?, locked_by = null, locked_at = null, heartbeat_at = null where id = ?", (now(), '用户取消', 'cancelled', task_id))
     elif task['status'] == 'running' and task['process_id']:
         try:
             if os.name == 'nt':
@@ -2124,7 +3304,7 @@ def api_cancel_task(task_id: int, user=Depends(require_api_user)):
         except Exception:
             pass
         with db() as conn:
-            conn.execute("update tasks set status = 'cancelled', finished_at = ?, process_id = null, error = ?, last_error_type = ? where id = ?", (now(), '用户取消', 'cancelled', task_id))
+            conn.execute("update tasks set status = 'cancelled', finished_at = ?, process_id = null, error = ?, last_error_type = ?, locked_by = null, locked_at = null, heartbeat_at = null where id = ?", (now(), '用户取消', 'cancelled', task_id))
     with db() as conn:
         refreshed = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id where tasks.id = ?', (task_id,)).fetchone()
     return {'task': task_payload(refreshed, include_config=True, include_log=True, include_files=True, include_preview=True)}

@@ -11,6 +11,12 @@ export type Account = {
   status: string;
   last_checked_at: string | null;
   last_error: string | null;
+  success_count: number;
+  failure_count: number;
+  task_count: number;
+  last_used_at: string | null;
+  cooldown_until: string | null;
+  tier: string;
   created_at: string;
 };
 
@@ -24,6 +30,9 @@ export type ProxyItem = {
   last_error: string | null;
   detected_ip: string | null;
   failure_count: number;
+  success_count: number;
+  last_used_at: string | null;
+  cooldown_until: string | null;
   created_at: string;
 };
 
@@ -32,6 +41,9 @@ export type Task = {
   user_id: number;
   username: string | null;
   account_id: number | null;
+  proxy_id: number | null;
+  schedule_id: number | null;
+  resource_mode: string;
   task_type: string;
   title: string;
   status: string;
@@ -40,6 +52,16 @@ export type Task = {
   started_at: string | null;
   finished_at: string | null;
   process_id: number | null;
+  locked_by?: string | null;
+  locked_at?: string | null;
+  heartbeat_at?: string | null;
+  progress_total?: number;
+  progress_done?: number;
+  api_calls?: number;
+  download_count?: number;
+  progress?: { total: number; done: number };
+  worker_id?: string | null;
+  indexed_counts?: { items: number; media_assets: number };
   retry_count: number;
   max_retries: number;
   last_retry_at: string | null;
@@ -49,6 +71,58 @@ export type Task = {
   files?: Array<{ name: string; size: number }>;
   summary?: TaskSummary;
   preview?: TaskPreview;
+};
+
+export type ScheduledTask = {
+  id: number;
+  user_id: number;
+  username: string | null;
+  account_id: number;
+  proxy_id: number | null;
+  name: string;
+  enabled: boolean;
+  schedule_type: 'daily' | 'weekly';
+  run_time: string;
+  weekdays: number[];
+  config: Record<string, unknown>;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_task_id: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OperationLog = {
+  id: number;
+  created_at: string;
+  level: 'info' | 'warning' | 'error';
+  event_type: string;
+  task_id: number | null;
+  schedule_id: number | null;
+  error_type: string | null;
+  message: string;
+  details: Record<string, unknown>;
+};
+
+export type ScheduleFormValues = {
+  name: string;
+  account_id: number;
+  proxy_id: number | null;
+  task_type: 'benchmark_account' | 'user_media';
+  targets: string;
+  schedule_type: 'daily' | 'weekly';
+  run_time: string;
+  weekdays: number[];
+  time_range: string;
+  max_concurrent_requests: number;
+  tweet_limit: number;
+  has_video: boolean;
+  has_retweet: boolean;
+  down_log: boolean;
+  md_output: boolean;
+  image_format: string;
+  media_count_limit: number;
+  proxy: string;
 };
 
 export type TaskPreview = {
@@ -71,6 +145,25 @@ export type TaskSummary = {
   total_bytes: number;
 };
 
+export type DashboardTask = {
+  id: number;
+  title: string;
+  task_type: string;
+  status: string;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  worker_id?: string | null;
+  progress?: { total: number; done: number };
+  indexed_counts?: { items: number; media_assets: number };
+  target: string;
+  summary: TaskSummary;
+  error?: string | null;
+  last_error_type?: string | null;
+  retry_count?: number;
+  max_retries?: number;
+};
+
 export type Dashboard = {
   totals: {
     tasks: number;
@@ -84,15 +177,27 @@ export type Dashboard = {
     downloads: number;
   };
   accounts: Record<string, number>;
-  recent_tasks: Array<{
-    id: number;
-    title: string;
-    task_type: string;
-    status: string;
-    created_at: string;
-    target: string;
-    summary: TaskSummary;
-  }>;
+  status_counts?: Record<string, number>;
+  resources?: {
+    accounts: {
+      total: number;
+      usable: number;
+      cooling: number;
+      expired: number;
+      warning: number;
+    };
+    proxies: {
+      total: number;
+      usable: number;
+      cooling: number;
+      disabled: number;
+      warning: number;
+    };
+  };
+  active_tasks?: DashboardTask[];
+  attention_tasks?: DashboardTask[];
+  recent_outputs?: DashboardTask[];
+  recent_tasks: DashboardTask[];
   templates: Array<{
     name: string;
     description: string;

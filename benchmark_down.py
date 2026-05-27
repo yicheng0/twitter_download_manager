@@ -238,15 +238,16 @@ class BenchmarkAccountDownloader:
 
     async def download_media(self, media_jobs):
         semaphore = asyncio.Semaphore(self.max_concurrent_requests)
+        limits = httpx.Limits(max_connections=self.max_concurrent_requests, max_keepalive_connections=self.max_concurrent_requests)
+        client = httpx.AsyncClient(proxy=self.proxy, limits=limits)
 
         async def down_save(url, file_path):
             attempts = 0
             while True:
                 try:
                     async with semaphore:
-                        async with httpx.AsyncClient(proxy=self.proxy) as client:
-                            response = await client.get(quote_url(url), timeout=(3.05, 16))
-                            response.raise_for_status()
+                        response = await client.get(quote_url(url), timeout=(3.05, 16))
+                        response.raise_for_status()
                     with open(file_path, 'wb') as f:
                         f.write(response.content)
                     self.download_count += 1
@@ -258,7 +259,10 @@ class BenchmarkAccountDownloader:
                         return
                     print(f'{file_path} 第{attempts}次下载失败，正在重试', flush=True)
 
-        await asyncio.gather(*[asyncio.create_task(down_save(url, file_path)) for url, file_path in media_jobs])
+        try:
+            await asyncio.gather(*[asyncio.create_task(down_save(url, file_path)) for url, file_path in media_jobs])
+        finally:
+            await client.aclose()
 
     def media_rows(self, tweet, folder_path):
         rows = []

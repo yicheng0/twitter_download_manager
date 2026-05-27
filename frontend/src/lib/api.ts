@@ -1,4 +1,4 @@
-import type { Account, ApiError, BitBrowserImportResponse, Dashboard, HealthStatus, ProxyItem, RunConfig, RunStatus, Task } from './types';
+import type { Account, ApiError, BitBrowserImportResponse, Dashboard, HealthStatus, OperationLog, ProxyItem, RunConfig, RunStatus, ScheduledTask, Task } from './types';
 
 export type LocalBrowserLoginResponse = {
   status: string;
@@ -44,6 +44,20 @@ export const api = {
   createTask: (payload: Record<string, unknown>) => request<{ task: Task }>('/api/tasks', { method: 'POST', body: JSON.stringify(payload) }),
   cancelTask: (id: number) => request<{ task: Task }>(`/api/tasks/${id}/cancel`, { method: 'POST' }),
   deleteTask: (id: number) => request<{ ok: boolean }>(`/api/tasks/${id}`, { method: 'DELETE' }),
+  schedules: () => request<{ schedules: ScheduledTask[] }>('/api/schedules'),
+  createSchedule: (payload: Record<string, unknown>) => request<{ schedule: ScheduledTask }>('/api/schedules', { method: 'POST', body: JSON.stringify(payload) }),
+  updateSchedule: (id: number, payload: Record<string, unknown>) => request<{ schedule: ScheduledTask }>(`/api/schedules/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  toggleSchedule: (id: number) => request<{ schedule: ScheduledTask }>(`/api/schedules/${id}/toggle`, { method: 'POST' }),
+  deleteSchedule: (id: number) => request<{ ok: boolean }>(`/api/schedules/${id}`, { method: 'DELETE' }),
+  operationLogs: (params?: { task_id?: number; schedule_id?: number; level?: string; limit?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.task_id) query.set('task_id', String(params.task_id));
+    if (params?.schedule_id) query.set('schedule_id', String(params.schedule_id));
+    if (params?.level) query.set('level', params.level);
+    if (params?.limit) query.set('limit', String(params.limit));
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return request<{ logs: OperationLog[] }>(`/api/operation-logs${suffix}`);
+  },
   accounts: () => request<{ accounts: Account[] }>('/api/accounts'),
   addAccount: (payload: Record<string, unknown>) => request<{ ok: boolean }>('/api/accounts/manual', { method: 'POST', body: JSON.stringify(payload) }),
   importBitBrowserAccounts: (payload: { base_url: string; browser_ids: string[] }) => request<BitBrowserImportResponse>('/api/accounts/import/bitbrowser', { method: 'POST', body: JSON.stringify(payload) }),

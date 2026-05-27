@@ -29,7 +29,8 @@
     </label>
     <label>
       X账号
-      <select name="account_id" required>
+      <select name="account_id">
+        <option value="">自动分配可用账号</option>
         {% for account in accounts %}
           <option value="{{ account.id }}">{{ account.label }}{% if account.screen_name %} (@{{ account.screen_name }}){% endif %}</option>
         {% endfor %}
