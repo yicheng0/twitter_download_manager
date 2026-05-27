@@ -11,6 +11,12 @@ import web_app  # noqa: E402
 class ResourceGovernanceTest(unittest.TestCase):
     def setUp(self):
         web_app.init_db()
+        with web_app.db() as conn:
+            conn.execute('delete from operation_logs')
+            conn.execute('delete from scheduled_tasks')
+            conn.execute('delete from tasks')
+            conn.execute('delete from proxies')
+            conn.execute('delete from accounts')
 
     def test_auto_account_skips_cooldown_account(self):
         with web_app.db() as conn:
@@ -106,6 +112,47 @@ class ResourceGovernanceTest(unittest.TestCase):
         with web_app.db() as conn:
             account = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
         self.assertEqual(account['task_count'], 0)
+
+    def test_scheduled_auto_account_reserves_available_account(self):
+        with web_app.db() as conn:
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at, tier)
+                values (?, ?, ?, ?, ?, 'active', ?, ?, 'stable')
+                ''',
+                ('auto-account', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'autoacct', web_app.now(), web_app.now()),
+            ).lastrowid
+
+        config = {
+            'task_type': 'benchmark_account',
+            'targets': 'autoacct',
+            'time_range': web_app.task_default_time_range(),
+            'tweet_limit': 1,
+            'max_concurrent_requests': 1,
+            'has_video': False,
+        }
+        original_start_worker = web_app.start_background_worker
+        web_app.start_background_worker = lambda: None
+        try:
+            task_id = web_app.create_queued_task(1, 0, config, resource_mode='scheduled', schedule_id=123)
+        finally:
+            web_app.start_background_worker = original_start_worker
+
+        with web_app.db() as conn:
+            task = conn.execute('select * from tasks where id = ?', (task_id,)).fetchone()
+            account = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
+        self.assertEqual(task['account_id'], account_id)
+        self.assertEqual(task['resource_mode'], 'scheduled')
+        self.assertEqual(task['schedule_id'], 123)
+        self.assertEqual(account['task_count'], 1)
+        self.assertIsNotNone(account['last_used_at'])
+
+    def test_health_status_exposes_resource_policy(self):
+        payload = web_app.health_status_payload()
+
+        self.assertIn('resource_policy', payload)
+        self.assertEqual(payload['resource_policy']['account_new_task_limit_24h'], web_app.ACCOUNT_NEW_TASK_LIMIT_24H)
+        self.assertEqual(payload['resource_policy']['proxy_min_interval_seconds'], web_app.PROXY_MIN_INTERVAL_SECONDS)
 
 
 if __name__ == '__main__':

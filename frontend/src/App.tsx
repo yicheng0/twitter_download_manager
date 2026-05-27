@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Eye, FileArchive, FolderKanban, Info, LogOut, Network, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Eye, FileArchive, FolderKanban, Info, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, X, Zap } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
@@ -113,6 +113,18 @@ const WEEKDAYS = [
   { value: 7, label: '周日' },
 ];
 
+const NAV_ITEMS = [
+  { to: '/', icon: BarChart3, label: '看板' },
+  { to: '/run', icon: Activity, label: '运行控制' },
+  { to: '/tasks', icon: FolderKanban, label: '任务' },
+  { to: '/tasks/new', icon: Plus, label: '新建任务' },
+  { to: '/schedules', icon: CalendarClock, label: '定时任务' },
+  { to: '/operation-logs', icon: ClipboardList, label: '运维日志' },
+  { to: '/result-db', icon: Database, label: '数据库' },
+  { to: '/accounts', icon: ShieldCheck, label: '账号' },
+  { to: '/proxies', icon: Network, label: '代理' },
+];
+
 function statusTone(status: string): BadgeTone {
   if (status === 'completed' || status === 'active' || status === 'finished') return 'success';
   if (status === 'running') return 'primary';
@@ -200,6 +212,8 @@ function displayStatus(status: string) {
 function Shell({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient();
   const { data: meData } = useQuery({ queryKey: ['me'], queryFn: () => api.me(), retry: false });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const logout = useMutation({
     mutationFn: api.logout,
     onSuccess: () => {
@@ -210,29 +224,59 @@ function Shell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-transparent text-[hsl(var(--text))]">
-      <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(9,18,33,0.88)] backdrop-blur">
-        <div className="mx-auto flex min-h-16 max-w-[1440px] flex-wrap items-center gap-3 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#102033_0%,#0b1220_100%)] shadow-[0_10px_24px_rgba(14,165,233,0.14)]">
-              <img src="/logo.svg" alt="X 采集工作台" className="h-9 w-9" />
-            </div>
-            <div>
-              <div className="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--primary-dark))]">采样工作台</div>
-              <div className="text-lg font-semibold leading-tight">X 采集工作台</div>
-            </div>
+      <div className="flex min-h-screen">
+        <aside className={cn(
+          'sticky top-0 hidden h-screen shrink-0 border-r border-[hsl(var(--line))] bg-[rgba(9,18,33,0.9)] backdrop-blur transition-[width] duration-200 lg:flex lg:flex-col',
+          sidebarCollapsed ? 'w-[88px]' : 'w-[264px]',
+        )}>
+          <SidebarContent
+            collapsed={sidebarCollapsed}
+            userName={meData?.user?.username}
+            logoutPending={logout.isPending}
+            onLogout={() => logout.mutate()}
+          />
+        </aside>
+
+        {mobileNavOpen && (
+          <div className="fixed inset-0 z-40 lg:hidden">
+            <button
+              type="button"
+              aria-label="关闭导航菜单"
+              className="absolute inset-0 bg-black/60"
+              onClick={() => setMobileNavOpen(false)}
+            />
+            <aside className="relative z-10 flex h-full w-[min(320px,calc(100vw-2rem))] flex-col border-r border-[hsl(var(--line))] bg-[rgba(9,18,33,0.98)] shadow-[0_24px_70px_rgba(2,8,23,0.55)]">
+              <div className="flex min-h-16 items-center justify-between border-b border-[hsl(var(--line))] px-4">
+                <BrandMark collapsed={false} />
+                <Button variant="ghost" size="sm" className="h-10 w-10 px-0" aria-label="关闭导航菜单" onClick={() => setMobileNavOpen(false)}>
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+              <SidebarNav collapsed={false} onNavigate={() => setMobileNavOpen(false)} />
+            </aside>
           </div>
-          <nav className="flex flex-wrap items-center gap-2 md:ml-4">
-            <NavItem to="/" icon={<BarChart3 className="h-4 w-4" />} label="看板" />
-            <NavItem to="/run" icon={<Activity className="h-4 w-4" />} label="运行控制" />
-            <NavItem to="/tasks" icon={<FolderKanban className="h-4 w-4" />} label="任务" />
-            <NavItem to="/tasks/new" icon={<Plus className="h-4 w-4" />} label="新建任务" />
-            <NavItem to="/schedules" icon={<CalendarClock className="h-4 w-4" />} label="定时任务" />
-            <NavItem to="/operation-logs" icon={<ClipboardList className="h-4 w-4" />} label="运维日志" />
-            <NavItem to="/result-db" icon={<Database className="h-4 w-4" />} label="数据库" />
-            <NavItem to="/accounts" icon={<ShieldCheck className="h-4 w-4" />} label="账号" />
-            <NavItem to="/proxies" icon={<Network className="h-4 w-4" />} label="代理" />
-          </nav>
-          <div className="ml-auto flex items-center gap-2">
+        )}
+
+        <div className="min-w-0 flex-1">
+          <header className="sticky top-0 z-20 border-b border-[hsl(var(--line))] bg-[rgba(9,18,33,0.86)] backdrop-blur">
+            <div className="mx-auto flex min-h-16 max-w-[1440px] items-center gap-3 px-4 py-3">
+              <Button variant="ghost" size="sm" className="h-10 w-10 px-0 lg:hidden" aria-label="打开导航菜单" onClick={() => setMobileNavOpen(true)}>
+                <Menu className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="hidden h-10 w-10 px-0 lg:inline-flex"
+                aria-label={sidebarCollapsed ? '展开侧边栏' : '折叠侧边栏'}
+                onClick={() => setSidebarCollapsed((value) => !value)}
+              >
+                {sidebarCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+              </Button>
+              <div className="min-w-0">
+                <div className="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--primary-dark))]">采样工作台</div>
+                <div className="truncate text-lg font-semibold leading-tight">X 采集工作台</div>
+              </div>
+              <div className="ml-auto flex items-center gap-2">
             {meData?.user && (
               <div className="hidden items-center gap-2 text-sm text-[hsl(var(--muted))] sm:flex">
                 <CircleUserRound className="h-4 w-4" />
@@ -244,26 +288,84 @@ function Shell({ children }: { children: React.ReactNode }) {
               退出
             </Button>
           </div>
+            </div>
+          </header>
+          <main className="mx-auto max-w-[1440px] px-4 py-5">{children}</main>
         </div>
-      </header>
-      <main className="mx-auto max-w-[1440px] px-4 py-5">{children}</main>
+      </div>
     </div>
   );
 }
 
-function NavItem({ to, icon, label }: { to: string; icon: React.ReactNode; label: string }) {
+function BrandMark({ collapsed }: { collapsed: boolean }) {
+  return (
+    <div className={cn('flex min-w-0 items-center gap-3', collapsed && 'justify-center')}>
+      <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-[hsl(var(--line))] bg-[linear-gradient(180deg,#102033_0%,#0b1220_100%)] shadow-[0_10px_24px_rgba(14,165,233,0.14)]">
+        <img src="/logo.svg" alt="X 采集工作台" className="h-9 w-9" />
+      </div>
+      {!collapsed && (
+        <div className="min-w-0">
+          <div className="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--primary-dark))]">采样工作台</div>
+          <div className="truncate text-lg font-semibold leading-tight">X 采集工作台</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SidebarContent({ collapsed, userName, logoutPending, onLogout }: { collapsed: boolean; userName?: string; logoutPending: boolean; onLogout: () => void }) {
+  return (
+    <>
+      <div className="flex min-h-16 items-center border-b border-[hsl(var(--line))] px-4">
+        <BrandMark collapsed={collapsed} />
+      </div>
+      <SidebarNav collapsed={collapsed} />
+      <div className="mt-auto border-t border-[hsl(var(--line))] p-3">
+        {userName && (
+          <div className={cn(
+            'mb-2 flex min-h-10 items-center gap-2 rounded-lg px-3 text-sm text-[hsl(var(--muted))]',
+            collapsed && 'justify-center px-0',
+          )}>
+            <CircleUserRound className="h-4 w-4 shrink-0" />
+            {!collapsed && <span className="truncate">{userName}</span>}
+          </div>
+        )}
+        <Button variant="secondary" size="sm" className={cn('w-full', collapsed && 'px-0')} onClick={onLogout} disabled={logoutPending} aria-label="退出">
+          <LogOut className="h-4 w-4" />
+          {!collapsed && '退出'}
+        </Button>
+      </div>
+    </>
+  );
+}
+
+function SidebarNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?: () => void }) {
+  return (
+    <nav className="flex flex-1 flex-col gap-1 overflow-y-auto px-3 py-4">
+      {NAV_ITEMS.map((item) => (
+        <NavItem key={item.to} to={item.to} icon={<item.icon className="h-4 w-4" />} label={item.label} collapsed={collapsed} onNavigate={onNavigate} />
+      ))}
+    </nav>
+  );
+}
+
+function NavItem({ to, icon, label, collapsed, onNavigate }: { to: string; icon: React.ReactNode; label: string; collapsed?: boolean; onNavigate?: () => void }) {
   return (
     <NavLink
       to={to}
+      title={collapsed ? label : undefined}
+      aria-label={collapsed ? label : undefined}
+      onClick={onNavigate}
       className={({ isActive }) =>
         cn(
-          'inline-flex min-h-10 items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium text-[hsl(var(--muted))] transition hover:bg-[hsl(var(--panel-soft))] hover:text-[hsl(var(--text))]',
+          'inline-flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-[hsl(var(--muted))] transition hover:bg-[hsl(var(--panel-soft))] hover:text-[hsl(var(--text))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(14,165,233,0.36)]',
+          collapsed ? 'justify-center px-0' : 'w-full',
           isActive && 'bg-[rgba(14,165,233,0.16)] text-[hsl(var(--primary-dark))]',
         )
       }
     >
       {icon}
-      {label}
+      {!collapsed && <span className="truncate">{label}</span>}
     </NavLink>
   );
 }
@@ -1992,7 +2094,7 @@ function SchedulesPage() {
             <div className="grid gap-2 md:grid-cols-3">
               <InfoCard title="新号每日上限" value={String(health.resource_policy.account_new_task_limit_24h)} />
               <InfoCard title="稳定号每日上限" value={String(health.resource_policy.account_stable_task_limit_24h)} />
-              <InfoCard title="限流冷却" value={`${health.resource_policy.account_rate_limit_cooldown_seconds / 3600}h`} />
+              <InfoCard title="限流冷却" value={`${Math.round(health.resource_policy.account_rate_limit_cooldown_seconds / 3600)}h`} />
             </div>
           )}
           <div className="flex justify-end gap-2">

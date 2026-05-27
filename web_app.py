@@ -1653,8 +1653,18 @@ def local_heatmap_items(user, date_value, hour_value, limit=HEATMAP_ITEM_LIMIT):
     if user['role'] != 'admin':
         user_filter = 'and tasks.user_id = ?'
         params.append(user['id'])
-    params.append(limit)
     with db() as conn:
+        total_row = conn.execute(
+            f'''
+            select count(*) as count
+            from task_items
+            join tasks on tasks.id = task_items.task_id
+            where datetime(coalesce(task_items.tweet_date, task_items.created_at)) >= datetime(?)
+              and datetime(coalesce(task_items.tweet_date, task_items.created_at)) < datetime(?)
+              {user_filter}
+            ''',
+            params,
+        ).fetchone()
         rows = conn.execute(
             f'''
             select
@@ -1678,13 +1688,13 @@ def local_heatmap_items(user, date_value, hour_value, limit=HEATMAP_ITEM_LIMIT):
             order by datetime(coalesce(task_items.tweet_date, task_items.created_at)) desc, task_items.id desc
             limit ?
             ''',
-            params,
+            [*params, limit],
         ).fetchall()
     return {
         'source': 'local',
         'date': day.strftime('%Y-%m-%d'),
         'hour': hour,
-        'total': len(rows),
+        'total': int(total_row['count'] if total_row else 0),
         'items': [heatmap_item_payload(row, source='local') for row in rows],
     }
 
@@ -1700,6 +1710,18 @@ def external_heatmap_items(config, user, date_value, hour_value, limit=HEATMAP_I
     user_filter, user_params = external_task_filter(user)
     params = {'start_at': start, 'end_at': end, 'limit': limit, **user_params}
     with engine.connect() as conn:
+        total_row = conn.execute(
+            text(
+                f'''
+                select count(*) as count
+                from tw_result_items
+                where coalesce(tweet_date, created_at) >= :start_at
+                  and coalesce(tweet_date, created_at) < :end_at
+                  {user_filter}
+                '''
+            ),
+            params,
+        ).mappings().first()
         rows = conn.execute(
             text(
                 f'''
@@ -1736,7 +1758,7 @@ def external_heatmap_items(config, user, date_value, hour_value, limit=HEATMAP_I
         'source': 'external',
         'date': day.strftime('%Y-%m-%d'),
         'hour': hour,
-        'total': len(enriched_rows),
+        'total': int(total_row['count'] if total_row else 0),
         'items': [heatmap_item_payload(row, source='external') for row in enriched_rows],
     }
 
@@ -2816,6 +2838,9 @@ def run_due_schedules():
     current = now()
     with db() as conn:
         conn.execute('begin immediate')
+        conn.execute(
+            "update scheduled_tasks set locked_at = null where locked_at is not null and datetime(locked_at, '+10 minutes') <= datetime('now', 'localtime')"
+        )
         rows = conn.execute(
             '''
             select scheduled_tasks.*, users.username
@@ -2831,6 +2856,38 @@ def run_due_schedules():
         conn.commit()
     for row in rows:
         trigger_schedule(row_to_dict(row))
+
+
+def record_schedule_task_result(task, status, error_type=None, error=''):
+    schedule_id = task.get('schedule_id')
+    if not schedule_id:
+        return
+    with db() as conn:
+        row = conn.execute('select * from scheduled_tasks where id = ?', (schedule_id,)).fetchone()
+        if not row:
+            return
+        if status == 'completed':
+            conn.execute(
+                'update scheduled_tasks set consecutive_failures = 0, last_error = null, updated_at = ? where id = ?',
+                (now(), schedule_id),
+            )
+            return
+        failure_count = int(row['consecutive_failures'] if 'consecutive_failures' in row.keys() else 0) + 1
+        should_disable = failure_count >= SCHEDULE_FAILURE_DISABLE_THRESHOLD
+        message = redact_sensitive(error or error_type or status)
+        conn.execute(
+            'update scheduled_tasks set consecutive_failures = ?, last_error = ?, enabled = ?, updated_at = ? where id = ?',
+            (failure_count, message, 0 if should_disable else row['enabled'], now(), schedule_id),
+        )
+    if should_disable:
+        append_operation_log(
+            'error',
+            'schedule_disabled',
+            f'定时计划连续失败 {failure_count} 次，已自动停用',
+            task_id=task.get('id'),
+            schedule_id=schedule_id,
+            error_type=error_type or status,
+        )
 
 
 def create_queued_task(user_id, account_id, config, resource_mode='manual', schedule_id=None):
@@ -3347,6 +3404,7 @@ def run_task(task, worker_id='worker-1'):
         )
         refreshed = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id where tasks.id = ?', (task['id'],)).fetchone()
     record_task_resource_result(task, status, error_type)
+    record_schedule_task_result(task, status, error_type, error)
     if refreshed:
         write_summary_report(refreshed)
         safe_sync_task_to_result_db(refreshed)

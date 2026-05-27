@@ -15,6 +15,11 @@ class WorkerQueueTest(unittest.TestCase):
     def setUp(self):
         web_app.init_db()
         web_app.stop_worker = False
+        with web_app.db() as conn:
+            conn.execute('delete from media_assets')
+            conn.execute('delete from task_items')
+            conn.execute('delete from tasks')
+            conn.execute('delete from accounts')
 
     def add_account(self):
         with web_app.db() as conn:

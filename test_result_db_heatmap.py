@@ -109,7 +109,7 @@ class ResultDbHeatmapTest(unittest.TestCase):
         )
 
         self.assertEqual(result['source'], 'local')
-        self.assertEqual(result['total'], 1)
+        self.assertEqual(result['total'], 2)
         self.assertEqual(len(result['items']), 1)
         self.assertEqual(result['items'][0]['task_title'], 'heatmap task')
         self.assertEqual(result['items'][0]['screen_name'], 'b')
