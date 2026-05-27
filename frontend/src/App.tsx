@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Eye, FileArchive, FolderKanban, Info, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, X, Zap } from 'lucide-react';
-import { Navigate, NavLink, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
@@ -350,13 +350,20 @@ function SidebarNav({ collapsed, onNavigate }: { collapsed: boolean; onNavigate?
 }
 
 function NavItem({ to, icon, label, collapsed, onNavigate }: { to: string; icon: React.ReactNode; label: string; collapsed?: boolean; onNavigate?: () => void }) {
+  const location = useLocation();
+  const isActive = to === '/'
+    ? location.pathname === '/'
+    : to === '/tasks'
+      ? location.pathname === '/tasks' || /^\/tasks\/\d+/.test(location.pathname)
+      : location.pathname === to || location.pathname.startsWith(`${to}/`);
+
   return (
     <NavLink
       to={to}
       title={collapsed ? label : undefined}
       aria-label={collapsed ? label : undefined}
       onClick={onNavigate}
-      className={({ isActive }) =>
+      className={() =>
         cn(
           'inline-flex min-h-11 items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-[hsl(var(--muted))] transition hover:bg-[hsl(var(--panel-soft))] hover:text-[hsl(var(--text))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[rgba(14,165,233,0.36)]',
           collapsed ? 'justify-center px-0' : 'w-full',
