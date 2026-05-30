@@ -1,7 +1,7 @@
 # Web Services
 
 Business logic for the full web console belongs here as it is extracted from
-`back.web.app`.
+`backend.web.app`.
 
 Keep modules domain-oriented:
 

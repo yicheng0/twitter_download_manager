@@ -10,9 +10,9 @@ from urllib.parse import urlparse
 
 import httpx
 
-from back.crawler.runtime.crawler_runtime import AsyncCrawlerClient, CrawlerClient, CrawlerError, RequestBudget, classify_exception, media_download_retries, page_delay
-from back.shared.proxy_utils import proxy_for_httpx
-from back.shared.url_utils import quote_url
+from backend.crawler.runtime.crawler_runtime import AsyncCrawlerClient, CrawlerClient, CrawlerError, RequestBudget, classify_exception, media_download_retries, page_delay
+from backend.shared.proxy_utils import proxy_for_httpx
+from backend.shared.url_utils import quote_url
 
 
 AUTHORIZATION = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA'
@@ -91,7 +91,7 @@ class BenchmarkCsv:
             newline='',
         )
         self.writer = csv.writer(self.f)
-        from back.crawler.output.csv_gen import RealtimeWriter
+        from backend.crawler.output.csv_gen import RealtimeWriter
         self.realtime = RealtimeWriter()
         self.writer.writerow([display_name, '@' + screen_name])
         self.writer.writerow(['Tweet Range : ' + tweet_range])
@@ -169,6 +169,7 @@ class BenchmarkAccountDownloader:
             'rest_id': result['rest_id'],
             'name': legacy['name'],
             'screen_name': legacy['screen_name'],
+            'avatar_url': re.sub(r'_normal(\.\w+)$', r'_400x400\1', legacy.get('profile_image_url_https') or ''),
             'statuses_count': legacy['statuses_count'],
         }
 

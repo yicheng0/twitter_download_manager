@@ -21,7 +21,7 @@ def check_proxy(proxy_url, timeout=10):
         tuple: (是否成功, 检测到的 IP, 错误信息)
     """
     try:
-        from back.shared.proxy_utils import normalize_proxy_url
+        from backend.shared.proxy_utils import normalize_proxy_url
         normalized_url = normalize_proxy_url(proxy_url)
         response = httpx.get('https://api.ipify.org?format=json', proxy=normalized_url, timeout=timeout)
         if response.status_code == 200:

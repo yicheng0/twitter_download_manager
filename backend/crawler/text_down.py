@@ -5,8 +5,8 @@ import csv
 import time
 from datetime import datetime, timedelta
 
-from back.crawler.runtime.crawler_runtime import CrawlerClient, classify_exception, page_delay
-from back.crawler.runtime.user_info import User_info
+from backend.crawler.runtime.crawler_runtime import CrawlerClient, classify_exception, page_delay
+from backend.crawler.runtime.user_info import User_info
 
 
 def default_time_range(days=365):
@@ -50,7 +50,7 @@ class csv_gen():
     def __init__(self, save_path:str, user_name, screen_name, tweet_range) -> None:
         self.f = open(f'{save_path}/{screen_name}-{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}-text.csv', 'w', encoding='utf-8-sig', newline='')
         self.writer = csv.writer(self.f)
-        from back.crawler.output.csv_gen import RealtimeWriter
+        from backend.crawler.output.csv_gen import RealtimeWriter
         self.realtime = RealtimeWriter()
 
         #初始化

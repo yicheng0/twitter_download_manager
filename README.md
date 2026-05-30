@@ -215,14 +215,14 @@ Before enabling Caddy, confirm that host ports `80` and `443` are available, and
 
 | Script | Purpose |
 | --- | --- |
-| `back/` | Backend package containing Web, panel, crawler, shared utilities and tools. |
-| `web_app.py` | Compatibility entrypoint for `back.web.app`. |
-| `panel_app.py` | Compatibility entrypoint for `back.panel.app`. |
-| `main.py` | Compatibility entrypoint for `back.crawler.main`; downloads media by username according to `settings.json`. |
-| `tag_down.py` | Compatibility entrypoint for `back.crawler.tag_down`; downloads by tag, keyword or advanced search query. |
-| `text_down.py` | Compatibility entrypoint for `back.crawler.text_down`; exports text-only tweets. |
-| `reply_down.py` | Compatibility entrypoint for `back.crawler.reply_down`; downloads reply content. |
-| `profile_down.py` | Compatibility entrypoint for `back.crawler.profile_down`; fetches profile information. |
+| `backend/` | Backend package containing Web, panel, crawler, shared utilities and tools. |
+| `web_app.py` | Compatibility entrypoint for `backend.web.app`. |
+| `panel_app.py` | Compatibility entrypoint for `backend.panel.app`. |
+| `main.py` | Compatibility entrypoint for `backend.crawler.main`; downloads media by username according to `settings.json`. |
+| `tag_down.py` | Compatibility entrypoint for `backend.crawler.tag_down`; downloads by tag, keyword or advanced search query. |
+| `text_down.py` | Compatibility entrypoint for `backend.crawler.text_down`; exports text-only tweets. |
+| `reply_down.py` | Compatibility entrypoint for `backend.crawler.reply_down`; downloads reply content. |
+| `profile_down.py` | Compatibility entrypoint for `backend.crawler.profile_down`; fetches profile information. |
 
 ## Advanced Search
 

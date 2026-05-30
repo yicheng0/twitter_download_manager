@@ -12,7 +12,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from back.shared.proxy_utils import normalize_proxy_url
+from backend.shared.proxy_utils import normalize_proxy_url
 
 from ..core.config import ACTIVE_SETTINGS, BASE_DIR, DEFAULT_SETTINGS, RUNTIME_DIR
 from ..schemas import RunConfig, TaskState, default_time_range
@@ -138,7 +138,7 @@ def start_task(config: RunConfig) -> dict[str, Any]:
     env["PYTHONIOENCODING"] = "utf-8"
 
     process = subprocess.Popen(
-        [str(python_exe), "-m", "back.crawler.main"],
+        [str(python_exe), "-m", "backend.crawler.main"],
         cwd=str(BASE_DIR),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

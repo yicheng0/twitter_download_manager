@@ -42,5 +42,5 @@ if not exist "%CHROMIUM_MARKER%" (
 )
 
 echo Starting local Chrome login helper...
-"%PYTHON_EXE%" -m back.tools.local_login_helper
+"%PYTHON_EXE%" -m backend.tools.local_login_helper
 pause

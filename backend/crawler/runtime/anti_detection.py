@@ -5,7 +5,7 @@
 import random
 import time
 from datetime import datetime, timedelta
-from back.crawler.runtime.user_agent_pool import get_ua_metadata
+from backend.crawler.runtime.user_agent_pool import get_ua_metadata
 
 
 def generate_request_headers(account_row, cookie, referer='https://twitter.com/'):
@@ -20,7 +20,7 @@ def generate_request_headers(account_row, cookie, referer='https://twitter.com/'
     Returns:
         dict: 完整的请求头
     """
-    from back.crawler.runtime.crawler_runtime import AUTHORIZATION, ct0_from_cookie
+    from backend.crawler.runtime.crawler_runtime import AUTHORIZATION, ct0_from_cookie
 
     # 安全地从 dict 或 sqlite3.Row 中取值
     def _get(row, key):

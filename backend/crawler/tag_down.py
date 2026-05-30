@@ -9,11 +9,11 @@ import json
 import hashlib
 from datetime import datetime
 from urllib.parse import quote
-from back.crawler.runtime.crawler_runtime import AsyncCrawlerClient, CrawlerClient, classify_exception, media_download_retries, page_delay
-from back.shared.proxy_utils import proxy_for_httpx
-from back.shared.transaction_generate import get_transaction_id
-from back.shared.transaction_generate import get_url_path
-from back.shared.url_utils import quote_url
+from backend.crawler.runtime.crawler_runtime import AsyncCrawlerClient, CrawlerClient, classify_exception, media_download_retries, page_delay
+from backend.shared.proxy_utils import proxy_for_httpx
+from backend.shared.transaction_generate import get_transaction_id
+from backend.shared.transaction_generate import get_url_path
+from backend.shared.url_utils import quote_url
 
 
 ##########配置区域##########
@@ -131,7 +131,7 @@ class csv_gen():
     def __init__(self, save_path:str) -> None:
         self.f = open(f'{save_path}/{datetime.now().strftime("%Y-%m-%d %H-%M-%S")}-{mode}.csv', 'w', encoding='utf-8-sig', newline='')
         self.writer = csv.writer(self.f)
-        from back.crawler.output.csv_gen import RealtimeWriter
+        from backend.crawler.output.csv_gen import RealtimeWriter
         self.realtime = RealtimeWriter()
         self.text_mode = bool(text_down)
 

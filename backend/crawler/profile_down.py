@@ -1,7 +1,7 @@
 import os
 import re
 import json
-from back.crawler.runtime.crawler_runtime import CrawlerClient, classify_exception
+from backend.crawler.runtime.crawler_runtime import CrawlerClient, classify_exception
 
 
 

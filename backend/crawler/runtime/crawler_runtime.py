@@ -13,8 +13,8 @@ from urllib.parse import quote
 
 import httpx
 
-from back.shared.proxy_utils import proxy_for_httpx
-from back.shared.url_utils import quote_url
+from backend.shared.proxy_utils import proxy_for_httpx
+from backend.shared.url_utils import quote_url
 
 
 AUTHORIZATION = 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA'

@@ -7,8 +7,8 @@ import time
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
-from back.crawler.runtime.crawler_runtime import CrawlerError, classify_exception
-from back.shared.proxy_utils import proxy_for_httpx
+from backend.crawler.runtime.crawler_runtime import CrawlerError, classify_exception
+from backend.shared.proxy_utils import proxy_for_httpx
 
 
 DEFAULT_MAX_CONCURRENT_REQUESTS = max(1, int(os.environ.get('TW_DEFAULT_MAX_CONCURRENT_REQUESTS', '2') or 2))
@@ -80,8 +80,8 @@ def cookie_from_account(account):
 
 
 def run_user_media(config, cookie, output_dir):
-    from back.crawler import main as media_main
-    from back.crawler.runtime.user_info import User_info
+    from backend.crawler import main as media_main
+    from backend.crawler.runtime.user_info import User_info
 
     proxy = proxy_for_httpx(config.get('proxy'))
     users = clean_list(config.get('targets'))
@@ -134,7 +134,7 @@ def run_user_media(config, cookie, output_dir):
     media_main.down_count = 0
     media_main.request_budget = None
     if int(config.get('api_budget') or 0):
-        from back.crawler.runtime.crawler_runtime import RequestBudget
+        from backend.crawler.runtime.crawler_runtime import RequestBudget
 
         media_main.request_budget = RequestBudget(int(config.get('api_budget') or 0))
         print(f'预计 API 调用预算: {media_main.request_budget.max_calls} 次', flush=True)
@@ -149,7 +149,7 @@ def run_user_media(config, cookie, output_dir):
 
 
 def run_search(config, cookie, output_dir):
-    from back.crawler import tag_down
+    from backend.crawler import tag_down
 
     tag_down.proxy = proxy_for_httpx(config.get('proxy'))
     tag_down.cookie = cookie
@@ -180,7 +180,7 @@ def run_search(config, cookie, output_dir):
 
 
 def run_text(config, cookie, output_dir):
-    from back.crawler import text_down
+    from backend.crawler import text_down
 
     text_down.proxy = proxy_for_httpx(config.get('proxy'))
     users = clean_list(config.get('targets'))
@@ -203,7 +203,7 @@ def run_text(config, cookie, output_dir):
 
 
 def run_replies(config, cookie, output_dir):
-    from back.crawler import reply_down
+    from backend.crawler import reply_down
 
     reply_down.proxy = proxy_for_httpx(config.get('proxy'))
     targets = config.get('targets')
@@ -258,7 +258,7 @@ def run_profile(config, cookie, output_dir):
 
 
 def run_benchmark_account(config, cookie, output_dir):
-    from back.crawler import benchmark_down
+    from backend.crawler import benchmark_down
 
     benchmark_down.run_benchmark_account(config, cookie, output_dir)
 

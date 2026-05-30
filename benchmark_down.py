@@ -3,8 +3,8 @@ import sys
 
 
 if __name__ == '__main__':
-    runpy.run_module('back.crawler.benchmark_down', run_name='__main__')
+    runpy.run_module('backend.crawler.benchmark_down', run_name='__main__')
 else:
-    from back.crawler import benchmark_down as _module
+    from backend.crawler import benchmark_down as _module
 
     sys.modules[__name__] = _module

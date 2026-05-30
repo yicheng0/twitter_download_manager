@@ -1,5 +1,5 @@
 import sys
 
-from back.crawler.runtime import user_info as _module
+from backend.crawler.runtime import user_info as _module
 
 sys.modules[__name__] = _module

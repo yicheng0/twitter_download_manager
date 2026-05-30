@@ -3,7 +3,7 @@ setlocal
 set PYTHONUTF8=1
 set "APP_DIR=%LOCALAPPDATA%\TwitterDownloadLocalLoginHelper"
 set "SOURCE_DIR=%~dp0"
-set "HELPER_SOURCE=%SOURCE_DIR%back\tools\local_login_helper.py"
+set "HELPER_SOURCE=%SOURCE_DIR%backend\tools\local_login_helper.py"
 set "LAUNCHER_SOURCE=%SOURCE_DIR%launch_local_login_helper.bat"
 set "VPS_HOSTS=%TW_LOCAL_LOGIN_ALLOWED_HOSTS%"
 set "VENV_DIR=%APP_DIR%\.local-login-helper-venv"

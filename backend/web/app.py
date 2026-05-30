@@ -30,8 +30,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 from starlette.middleware.sessions import SessionMiddleware
 
-from back.web.core.paths import FRONTEND_ASSETS_DIR, PROJECT_ROOT, STATIC_DIR, TEMPLATES_DIR
-from back.shared.proxy_utils import normalize_proxy_url, redact_proxy_url as redact_proxy_value
+from backend.web.core.paths import FRONTEND_ASSETS_DIR, PROJECT_ROOT, STATIC_DIR, TEMPLATES_DIR
+from backend.shared.proxy_utils import normalize_proxy_url, redact_proxy_url as redact_proxy_value
 
 
 BASE_DIR = PROJECT_ROOT
@@ -680,6 +680,7 @@ def apply_schema_migrations():
             (4, migration_anti_detection_and_realtime),
             (5, migration_tracked_bloggers),
             (6, migration_schedule_monitor_states),
+            (7, migration_blogger_categories_and_profiles),
         ]
         for version, migration in migrations:
             if current >= version:
@@ -897,6 +898,9 @@ def create_tracked_bloggers_table(conn):
             id integer primary key autoincrement,
             screen_name text not null unique,
             display_name text,
+            avatar_url text,
+            profile_updated_at text,
+            category_id integer,
             default_tweet_limit integer not null default 10,
             last_used_at text,
             use_count integer not null default 0,
@@ -904,6 +908,26 @@ def create_tracked_bloggers_table(conn):
             updated_at text not null
         );
         create index if not exists idx_tracked_bloggers_last_used on tracked_bloggers(last_used_at desc);
+        create index if not exists idx_tracked_bloggers_category on tracked_bloggers(category_id);
+        '''
+    )
+    ensure_column(conn, 'tracked_bloggers', 'avatar_url', 'text')
+    ensure_column(conn, 'tracked_bloggers', 'profile_updated_at', 'text')
+    ensure_column(conn, 'tracked_bloggers', 'category_id', 'integer')
+    conn.execute('create index if not exists idx_tracked_bloggers_category on tracked_bloggers(category_id)')
+
+
+def create_blogger_categories_table(conn):
+    conn.executescript(
+        '''
+        create table if not exists blogger_categories (
+            id integer primary key autoincrement,
+            name text not null unique,
+            color text not null default '#38bdf8',
+            created_at text not null,
+            updated_at text not null
+        );
+        create index if not exists idx_blogger_categories_name on blogger_categories(name);
         '''
     )
 
@@ -933,6 +957,11 @@ def migration_schedule_monitor_states(conn):
         create index if not exists idx_schedule_monitor_states_checked on schedule_monitor_states(last_checked_at);
         '''
     )
+
+
+def migration_blogger_categories_and_profiles(conn):
+    create_tracked_bloggers_table(conn)
+    create_blogger_categories_table(conn)
 
 
 def create_account_warmup_runs_table(conn):
@@ -1182,6 +1211,7 @@ def init_db():
         conn.execute('create index if not exists idx_media_assets_url on media_assets(media_url)')
         ensure_column(conn, 'result_db_configs', 'last_synced_at', 'text')
         create_tracked_bloggers_table(conn)
+        create_blogger_categories_table(conn)
     apply_schema_migrations()
 
 
@@ -3299,7 +3329,7 @@ def reserve_resources_for_task_in_conn(conn, account_id, proxy_id=None, reserved
     account = conn.execute('SELECT user_agent, accept_language FROM accounts WHERE id = ?', (account_id,)).fetchone()
     if account and not account['user_agent']:
         try:
-            from back.crawler.runtime.user_agent_pool import get_random_ua
+            from backend.crawler.runtime.user_agent_pool import get_random_ua
             ua_data = get_random_ua()
             conn.execute(
                 'UPDATE accounts SET user_agent = ?, accept_language = ? WHERE id = ?',
@@ -3809,7 +3839,7 @@ def start_main_process(config: dict):
     env['PYTHONIOENCODING'] = 'utf-8'
 
     process = subprocess.Popen(
-        [str(python_exe), '-m', 'back.crawler.main'],
+        [str(python_exe), '-m', 'backend.crawler.main'],
         cwd=str(BASE_DIR),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -4331,7 +4361,7 @@ def tweet_id_from_url(url):
 
 
 def latest_tweet_for_monitor(screen_name, account, proxy_value=''):
-    from back.crawler.benchmark_down import BenchmarkAccountDownloader
+    from backend.crawler.benchmark_down import BenchmarkAccountDownloader
 
     config = {
         'targets': screen_name,
@@ -4950,7 +4980,7 @@ def run_task(task, worker_id='worker-1'):
     cmd = [
         sys.executable,
         '-m',
-        'back.crawler.web_runner',
+        'backend.crawler.web_runner',
         '--config',
         str(config_path),
         '--account',
@@ -5284,7 +5314,7 @@ def apply_automatic_concurrency(config):
 
 
 def normalize_user_targets(value, label='目标账号'):
-    from back.crawler.benchmark_down import parse_screen_name
+    from backend.crawler.benchmark_down import parse_screen_name
 
     raw_targets = str(value or '').replace(',', '\n').splitlines()
     parsed = []
@@ -6275,7 +6305,7 @@ async def api_bulk_add_bloggers(request: Request, user=Depends(require_api_user)
     duplicates = []
     skipped = []
     seen = set()
-    from back.crawler.benchmark_down import parse_screen_name
+    from backend.crawler.benchmark_down import parse_screen_name
 
     with db() as conn:
         for raw in raw_lines:
@@ -6627,7 +6657,7 @@ def api_local_browser_login_helper_install(request: Request, user=Depends(requir
 
 @app.get('/api/accounts/local-browser-login/helper/script')
 def api_local_browser_login_helper_script():
-    path = BASE_DIR / 'back' / 'tools' / 'local_login_helper.py'
+    path = BASE_DIR / 'backend' / 'tools' / 'local_login_helper.py'
     if not path.exists():
         raise HTTPException(status_code=404, detail='local_login_helper.py not found')
     return FileResponse(path, media_type='text/x-python', filename='local_login_helper.py')
