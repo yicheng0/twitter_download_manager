@@ -855,16 +855,6 @@ function heatmapMetricValue(cell: DashboardHeatmapCell | undefined, metric: Heat
   return Number(cell[metric] || 0);
 }
 
-function heatmapLevel(value: number, maxValue: number, selected = false) {
-  if (selected) return 'bg-[rgba(249,115,22,0.98)] border-[rgba(255,237,213,0.95)] ring-2 ring-[rgba(255,237,213,0.45)]';
-  if (!value || !maxValue) return 'bg-[rgba(148,163,184,0.12)] border-[rgba(148,163,184,0.18)]';
-  const ratio = value / maxValue;
-  if (ratio >= 0.8) return 'bg-[rgba(249,115,22,0.92)] border-[rgba(249,115,22,0.95)]';
-  if (ratio >= 0.55) return 'bg-[rgba(251,191,36,0.78)] border-[rgba(251,191,36,0.82)]';
-  if (ratio >= 0.3) return 'bg-[rgba(14,165,233,0.62)] border-[rgba(14,165,233,0.68)]';
-  return 'bg-[rgba(59,130,246,0.34)] border-[rgba(59,130,246,0.42)]';
-}
-
 function heatmapSummary(heatmap: DashboardHeatmap | undefined, metric: HeatmapMetric) {
   const cells = heatmap?.cells || [];
   const today = heatmap?.dates?.[heatmap.dates.length - 1];
@@ -898,6 +888,52 @@ function heatmapSummary(heatmap: DashboardHeatmap | undefined, metric: HeatmapMe
   };
 }
 
+type HeatmapDailyRow = {
+  date: string;
+  value: number;
+  count: number;
+  media_count: number;
+  task_count: number;
+  peakHour: number;
+  peakValue: number;
+  percent: number;
+};
+
+function heatmapDailyRows(heatmap: DashboardHeatmap | undefined, metric: HeatmapMetric) {
+  const byDate = new Map<string, HeatmapDailyRow>();
+  for (const date of heatmap?.dates || []) {
+    byDate.set(date, {
+      date,
+      value: 0,
+      count: 0,
+      media_count: 0,
+      task_count: 0,
+      peakHour: 0,
+      peakValue: 0,
+      percent: 0,
+    });
+  }
+  for (const cell of heatmap?.cells || []) {
+    const row = byDate.get(cell.date);
+    if (!row) continue;
+    const value = heatmapMetricValue(cell, metric);
+    row.value += value;
+    row.count += Number(cell.count || 0);
+    row.media_count += Number(cell.media_count || 0);
+    row.task_count += Number(cell.task_count || 0);
+    if (value > row.peakValue) {
+      row.peakValue = value;
+      row.peakHour = cell.hour;
+    }
+  }
+  const rows = Array.from(byDate.values());
+  const maxDailyValue = Math.max(0, ...rows.map((row) => row.value));
+  return rows.map((row) => ({
+    ...row,
+    percent: maxDailyValue ? Math.round((row.value / maxDailyValue) * 100) : 0,
+  }));
+}
+
 function HeatmapPanel({
   heatmap,
   days,
@@ -919,19 +955,17 @@ function HeatmapPanel({
   onMetricChange: (value: HeatmapMetric) => void;
   onCellSelect: (value: { date: string; hour: number }) => void;
 }) {
-  const cells = heatmap?.cells || [];
-  const cellByKey = new Map(cells.map((cell) => [`${cell.date}-${cell.hour}`, cell]));
-  const dates = heatmap?.dates || [];
-  const hours = heatmap?.hours || Array.from({ length: 24 }, (_, index) => index);
   const summary = heatmapSummary(heatmap, metric);
   const metricName = HEATMAP_METRICS.find((item) => item.value === metric)?.label || '记录数';
+  const dailyRows = heatmapDailyRows(heatmap, metric);
+  const selectedDate = selectedCell?.date;
   return (
     <Card>
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <BarChart3 className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
-            <h2 className="font-semibold">采集时间热力图</h2>
+            <h2 className="font-semibold">采集进度趋势</h2>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <SegmentedControl options={HEATMAP_DAY_OPTIONS} value={days} onChange={onDaysChange} />
@@ -946,49 +980,55 @@ function HeatmapPanel({
           <InfoCard title={`昨日${summary.metricLabel}`} value={String(summary.yesterdayTotal)} />
           <InfoCard title="峰值时段" value={summary.peakLabel} />
         </div>
-        <div className="overflow-auto">
-          <div className="min-w-[980px]">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-3 text-xs text-[hsl(var(--muted))]">
-              <div>最近 {heatmap?.days || days} 天 · {metricName} · 数据源：{heatmap?.source === 'external' ? '外部结果库' : '本地索引库'}</div>
-              <div>总量 {summary.total} · 峰值 {summary.maxValue} · 活跃时段 {summary.taskWindows}</div>
-            </div>
-            <div className="grid gap-1" style={{ gridTemplateColumns: `88px repeat(${hours.length}, minmax(28px, 1fr))` }}>
-              <div />
-              {hours.map((hour) => (
-                <div key={hour} className="text-center text-[10px] text-[hsl(var(--muted))]">{hour}</div>
-              ))}
-              {dates.map((date) => (
-                <div key={date} className="contents">
-                  <div className="flex items-center text-xs text-[hsl(var(--muted))]">{date.slice(5)}</div>
-                  {hours.map((hour) => {
-                    const cell = cellByKey.get(`${date}-${hour}`) || { date, hour, count: 0, media_count: 0, task_count: 0 };
-                    const value = heatmapMetricValue(cell, metric);
-                    const selected = selectedCell?.date === date && selectedCell.hour === hour;
-                    return (
-                      <button
-                        key={`${date}-${hour}`}
-                        type="button"
-                        onClick={() => onCellSelect({ date, hour })}
-                        title={`${date} ${String(hour).padStart(2, '0')}:00 记录 ${cell.count} · 媒体 ${cell.media_count} · 任务 ${cell.task_count}`}
-                        className={cn('h-7 cursor-pointer rounded border transition-colors hover:border-[hsl(var(--text))]', heatmapLevel(value, summary.maxValue, selected))}
-                        aria-label={`${date} ${hour}点 ${metricName} ${value}`}
+        <div className="rounded-lg border border-[hsl(var(--line))] bg-[rgba(15,23,42,0.36)]">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[hsl(var(--line))] px-4 py-3 text-xs text-[hsl(var(--muted))]">
+            <div>最近 {heatmap?.days || days} 天 · {metricName} · 数据源：{heatmap?.source === 'external' ? '外部结果库' : '本地索引库'}</div>
+            <div>总量 {summary.total} · 峰值时段 {summary.maxValue} · 活跃时段 {summary.taskWindows}</div>
+          </div>
+          <div className="divide-y divide-[hsl(var(--line))]">
+            {dailyRows.map((row) => {
+              const selected = selectedDate === row.date;
+              const peakLabel = `${String(row.peakHour).padStart(2, '0')}:00`;
+              return (
+                <button
+                  key={row.date}
+                  type="button"
+                  onClick={() => onCellSelect({ date: row.date, hour: row.peakHour })}
+                  className={cn(
+                    'grid w-full cursor-pointer gap-3 px-4 py-3 text-left transition-colors hover:bg-[rgba(14,165,233,0.08)] md:grid-cols-[96px_minmax(0,1fr)_280px]',
+                    selected && 'bg-[rgba(14,165,233,0.12)]',
+                  )}
+                  aria-label={`${row.date} ${metricName} ${row.value}，峰值小时 ${peakLabel}`}
+                >
+                  <div className="min-w-0">
+                    <div className="font-semibold">{row.date.slice(5)}</div>
+                    <div className="mt-1 text-xs text-[hsl(var(--muted))]">峰值 {peakLabel}</div>
+                  </div>
+                  <div className="flex min-w-0 items-center gap-3">
+                    <div className="h-3 min-w-0 flex-1 overflow-hidden rounded-full bg-[rgba(148,163,184,0.16)]">
+                      <div
+                        className="h-full rounded-full bg-[linear-gradient(90deg,hsl(var(--primary))_0%,hsl(var(--warning))_100%)] transition-[width] duration-300"
+                        style={{ width: `${row.percent}%` }}
                       />
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs text-[hsl(var(--muted))]">
-              <div>总记录 {heatmap?.total || 0} · 峰值 {heatmap?.max_count || 0}</div>
-              <div className="flex items-center gap-2">
-                <span>低</span>
-                <span className="h-3 w-6 rounded bg-[rgba(59,130,246,0.34)]" />
-                <span className="h-3 w-6 rounded bg-[rgba(14,165,233,0.62)]" />
-                <span className="h-3 w-6 rounded bg-[rgba(251,191,36,0.78)]" />
-                <span className="h-3 w-6 rounded bg-[rgba(249,115,22,0.92)]" />
-                <span>高</span>
-              </div>
-            </div>
+                    </div>
+                    <div className="w-14 text-right text-xs font-semibold text-[hsl(var(--primary-dark))]">{row.percent}%</div>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-start gap-2 text-xs text-[hsl(var(--muted))] md:justify-end">
+                    <Badge tone={row.value ? 'primary' : 'neutral'}>{row.value} {summary.metricLabel}</Badge>
+                    <span>{row.count} 记录</span>
+                    <span>{row.media_count} 媒体</span>
+                    <span>{row.task_count} 任务</span>
+                  </div>
+                </button>
+              );
+            })}
+            {!dailyRows.length && (
+              <div className="px-4 py-8 text-center text-sm text-[hsl(var(--muted))]">暂无采集趋势数据</div>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[hsl(var(--line))] px-4 py-3 text-xs text-[hsl(var(--muted))]">
+            <div>点击某天查看当天峰值小时的采集内容。</div>
+            <div>总记录 {heatmap?.total || 0} · 原始小时峰值 {heatmap?.max_count || 0}</div>
           </div>
         </div>
         <HeatmapDrilldown selectedCell={selectedCell} items={items} loading={itemsLoading} />
