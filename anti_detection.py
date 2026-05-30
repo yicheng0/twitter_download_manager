@@ -22,9 +22,20 @@ def generate_request_headers(account_row, cookie, referer='https://twitter.com/'
     """
     from crawler_runtime import ct0_from_cookie, AUTHORIZATION
 
+    # 安全地从 dict 或 sqlite3.Row 中取值
+    def _get(row, key):
+        try:
+            if hasattr(row, 'keys') and key in row.keys():
+                return row[key]
+            if isinstance(row, dict):
+                return row.get(key)
+        except Exception:
+            pass
+        return None
+
     # 获取账号绑定的 UA 元数据
-    user_agent = account_row.get('user_agent') or account_row['user_agent'] if 'user_agent' in account_row.keys() else None
-    accept_language = account_row.get('accept_language') or account_row['accept_language'] if 'accept_language' in account_row.keys() else None
+    user_agent = _get(account_row, 'user_agent')
+    accept_language = _get(account_row, 'accept_language')
 
     if not user_agent:
         # 如果账号没有 UA，使用默认值（兼容旧账号）

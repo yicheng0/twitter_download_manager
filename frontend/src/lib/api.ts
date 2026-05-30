@@ -1,4 +1,4 @@
-import type { Account, ApiError, BitBrowserImportResponse, Dashboard, DashboardHeatmapItems, HealthStatus, OperationLogResponse, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, Task, TaskItemsResponse } from './types';
+import type { Account, ApiError, BitBrowserImportResponse, Dashboard, DashboardHeatmapItems, HealthStatus, LoginQueueParseResponse, LoginQueueResponse, OperationLogResponse, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, Task, TaskItemsResponse } from './types';
 
 export type LocalBrowserLoginResponse = {
   status: string;
@@ -120,6 +120,11 @@ export const api = {
   localBrowserLoginStart: () => request<LocalBrowserLoginResponse>('/api/accounts/local-browser-login/start', { method: 'POST' }),
   localBrowserLoginStatus: (token: string) => request<LocalBrowserLoginResponse>(`/api/accounts/local-browser-login/status?token=${encodeURIComponent(token)}`),
   localBrowserLoginCancel: (token: string) => request<{ ok: boolean }>('/api/accounts/local-browser-login/cancel', { method: 'POST', body: JSON.stringify({ token }) }),
+  parseLoginQueueText: (payload: { text: string }) => request<LoginQueueParseResponse>('/api/accounts/login-queue/parse', { method: 'POST', body: JSON.stringify(payload) }),
+  createLoginQueue: (payload: { labels?: string[]; text?: string }) => request<LoginQueueResponse>('/api/accounts/login-queue', { method: 'POST', body: JSON.stringify(payload) }),
+  loginQueueStatus: () => request<LoginQueueResponse>('/api/accounts/login-queue/status'),
+  skipLoginQueueItem: (id: number) => request<LoginQueueResponse>(`/api/accounts/login-queue/${id}/skip`, { method: 'POST' }),
+  retryLoginQueueItem: (id: number) => request<LoginQueueResponse>(`/api/accounts/login-queue/${id}/retry`, { method: 'POST' }),
   checkAccount: (id: number) => request<{ account: Account; ok: boolean; error: string }>(`/api/accounts/${id}/check`, { method: 'POST' }),
   deleteAccount: (id: number) => request<{ ok: boolean }>(`/api/accounts/${id}`, { method: 'DELETE' }),
   proxies: () => request<{ proxies: ProxyItem[] }>('/api/proxies'),

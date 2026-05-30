@@ -275,6 +275,12 @@ def main():
     with open(args.account, 'r', encoding='utf-8') as f:
         account = json.load(f)
 
+    # 将账号绑定的 UA 注入环境变量，供反检测请求头使用
+    if account.get('user_agent'):
+        os.environ['TW_ACCOUNT_UA'] = account['user_agent']
+    if account.get('accept_language'):
+        os.environ['TW_ACCOUNT_ACCEPT_LANGUAGE'] = account['accept_language']
+
     output_dir = ensure_task_dir(args.output)
     cookie = cookie_from_account(account)
     task_type = config.get('task_type')

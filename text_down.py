@@ -42,28 +42,45 @@ class csv_gen():
     def __init__(self, save_path:str, user_name, screen_name, tweet_range) -> None:
         self.f = open(f'{save_path}/{screen_name}-{datetime.now().strftime("%Y-%m-%d_%H-%M-%S")}-text.csv', 'w', encoding='utf-8-sig', newline='')
         self.writer = csv.writer(self.f)
+        from csv_gen import RealtimeWriter
+        self.realtime = RealtimeWriter()
 
         #初始化
         self.writer.writerow([user_name, '@' + screen_name])
         self.writer.writerow(['Tweet Range : ' + tweet_range])
         self.writer.writerow(['Save Path : ' + save_path])
-        main_par = ['Display Name', 'User Name', 'Tweet Date', 'Tweet URL', 'Tweet Content', 'Favorite Count', 
+        main_par = ['Display Name', 'User Name', 'Tweet Date', 'Tweet URL', 'Tweet Content', 'Favorite Count',
                     'Retweet Count', 'Reply Count']
         self.writer.writerow(main_par)
 
-        pass
-
     def csv_close(self):
+        self.realtime.flush()
         self.f.close()
 
     def stamp2time(self, msecs_stamp:int) -> str:
         timeArray = time.localtime(msecs_stamp/1000)
         otherStyleTime = time.strftime("%Y-%m-%d %H:%M", timeArray)
         return otherStyleTime
-    
+
     def data_input(self, main_par_info:list) -> None:   #数据格式参见 main_par
         main_par_info[2] = self.stamp2time(main_par_info[2])    #传进来的是 int 时间戳, 故转换一下
         self.writer.writerow(main_par_info)
+
+        # 同时写入实时数据库（字段顺序映射到统一 schema）
+        # main_par_info: [display_name, user_name, tweet_date, tweet_url, content, fav, rt, reply]
+        self.realtime.add([
+            main_par_info[2],  # tweet_date
+            main_par_info[0],  # display_name
+            main_par_info[1],  # user_name
+            main_par_info[3],  # tweet_url
+            '',                # media_type
+            '',                # media_url
+            '',                # saved_filename
+            main_par_info[4],  # tweet_content
+            main_par_info[5],  # favorite_count
+            main_par_info[6],  # retweet_count
+            main_par_info[7],  # reply_count
+        ])
 
 
 def time_comparison(now):

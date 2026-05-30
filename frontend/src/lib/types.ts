@@ -201,6 +201,40 @@ export type TaskItemsResponse = {
   items: TaskResultItem[];
 };
 
+export type LoginQueueItem = {
+  id: number;
+  label: string;
+  status: string;
+  message: string;
+  token: string;
+  screen_name: string;
+  created_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+  expires_in: number;
+};
+
+export type LoginQueueResponse = {
+  items: LoginQueueItem[];
+  active: LoginQueueItem | null;
+  callback_url: string;
+};
+
+export type LoginQueueParseItem = {
+  label: string;
+};
+
+export type LoginQueueParseSkipped = {
+  reason: string;
+};
+
+export type LoginQueueParseResponse = {
+  items: LoginQueueParseItem[];
+  duplicates: LoginQueueParseItem[];
+  skipped: LoginQueueParseSkipped[];
+  sensitive_fields_removed: number;
+};
+
 export type TaskSummary = {
   csv_files: number;
   records: number;

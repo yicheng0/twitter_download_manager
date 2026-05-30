@@ -91,6 +91,8 @@ class BenchmarkCsv:
             newline='',
         )
         self.writer = csv.writer(self.f)
+        from csv_gen import RealtimeWriter
+        self.realtime = RealtimeWriter()
         self.writer.writerow([display_name, '@' + screen_name])
         self.writer.writerow(['Tweet Range : ' + tweet_range])
         self.writer.writerow(['Save Path : ' + save_path])
@@ -113,8 +115,11 @@ class BenchmarkCsv:
     def data_input(self, row):
         row[0] = stamp2time(row[0])
         self.writer.writerow(row)
+        # 同时写入实时数据库（实时数据展示）
+        self.realtime.add(row)
 
     def csv_close(self):
+        self.realtime.flush()
         self.f.close()
 
 

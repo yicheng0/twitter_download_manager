@@ -130,6 +130,15 @@ def standard_headers(cookie, account_row=None, referer='https://twitter.com/'):
     Returns:
         dict: 请求头
     """
+    # 如果没有显式传入账号信息，尝试从环境变量构造（由 web_runner 注入）
+    if not account_row:
+        env_ua = os.environ.get('TW_ACCOUNT_UA', '').strip()
+        if env_ua:
+            account_row = {
+                'user_agent': env_ua,
+                'accept_language': os.environ.get('TW_ACCOUNT_ACCEPT_LANGUAGE', '').strip() or None,
+            }
+
     if account_row:
         # 使用反检测请求头
         try:

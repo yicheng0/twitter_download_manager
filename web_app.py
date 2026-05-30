@@ -84,6 +84,9 @@ browser_login_session = None
 LOCAL_BROWSER_LOGIN_TIMEOUT_SECONDS = 300
 local_browser_login_sessions = {}
 local_browser_login_lock = threading.Lock()
+login_queue_lock = threading.Lock()
+login_queue_items = []
+login_queue_counter = 0
 ACCOUNT_NEW_TASK_LIMIT_24H = max(1, int(os.environ.get('TW_ACCOUNT_NEW_TASK_LIMIT_24H', '3') or 3))
 ACCOUNT_STABLE_TASK_LIMIT_24H = max(1, int(os.environ.get('TW_ACCOUNT_STABLE_TASK_LIMIT_24H', '20') or 20))
 ACCOUNT_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_MIN_INTERVAL_SECONDS', str(10 * 60)) or 0))
@@ -166,6 +169,224 @@ def local_browser_login_payload(token):
         'expires_in': max(0, int(session['expires_at'] - time.time())),
         'screen_name': session.get('screen_name') or '',
     }
+
+
+LOGIN_QUEUE_USERNAME_RE = re.compile(
+    r'(?:用户名|账号|user(?:name)?|screen[_ -]?name)\s*[:：=]?\s*(@?[A-Za-z0-9_]{2,32})',
+    flags=re.IGNORECASE,
+)
+LOGIN_QUEUE_PLAIN_LABEL_RE = re.compile(r'@?[A-Za-z0-9_][A-Za-z0-9_\-. ]{1,78}[A-Za-z0-9_]')
+LOGIN_QUEUE_SENSITIVE_KEY_RE = re.compile(
+    r'(邮箱密码|email[_ -]?password|password|passwd|pwd|密码|2fa|验证码(?:获取)?链接?|auth_token|ct0|cookie|邮箱|email)\s*[:：=]?',
+    flags=re.IGNORECASE,
+)
+
+
+def login_queue_sensitive_field_count(text):
+    value = str(text or '')
+    return (
+        len(LOGIN_QUEUE_SENSITIVE_KEY_RE.findall(value))
+        + len(re.findall(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', value))
+        + len(re.findall(r'https?://\S+', value))
+    )
+
+
+def sanitize_login_queue_label(value):
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    user_match = LOGIN_QUEUE_USERNAME_RE.search(text)
+    if user_match:
+        return user_match.group(1).lstrip('@')[:80]
+    if re.fullmatch(r'@?[A-Za-z0-9_]{2,32}', text):
+        return text.lstrip('@')[:80]
+    text = re.sub(r'(password|passwd|pwd|邮箱密码|密码|email[_ -]?password|2fa|验证码|auth_token|ct0|cookie)\s*[:：=]?\s*\S+', '[已隐藏]', text, flags=re.IGNORECASE)
+    text = re.sub(r'[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}', '[邮箱已隐藏]', text)
+    text = re.sub(r'https?://\S+', '[链接已隐藏]', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    if not text or text in {'[已隐藏]', '[链接已隐藏]', '[邮箱已隐藏]'}:
+        return ''
+    markerless = re.sub(r'\[(?:已隐藏|链接已隐藏|邮箱已隐藏)\]', '', text).strip()
+    if not markerless:
+        return ''
+    if not re.search(r'[A-Za-z0-9_\u4e00-\u9fff]', text):
+        return ''
+    return text[:80]
+
+
+def parse_login_queue_text(text):
+    raw = str(text or '').strip()
+    result = {
+        'items': [],
+        'duplicates': [],
+        'skipped': [],
+        'sensitive_fields_removed': login_queue_sensitive_field_count(raw),
+    }
+    if not raw:
+        return result
+    seen = set()
+
+    def add_label(label):
+        clean = sanitize_login_queue_label(label)
+        if not clean:
+            result['skipped'].append({'reason': '无法识别用户名'})
+            return
+        key = clean.lower()
+        if key in seen:
+            result['duplicates'].append({'label': clean})
+            return
+        seen.add(key)
+        result['items'].append({'label': clean})
+
+    username_matches = list(LOGIN_QUEUE_USERNAME_RE.finditer(raw))
+    if username_matches:
+        for match in username_matches:
+            add_label(match.group(1))
+        return result
+
+    chunks = [chunk.strip() for chunk in re.split(r'[\r\n,;；]+', raw) if chunk.strip()]
+    for chunk in chunks:
+        add_label(chunk)
+    return result
+
+
+def normalize_login_queue_labels(data):
+    raw_items = data.get('items')
+    if raw_items is None:
+        raw_items = data.get('labels')
+    if raw_items is None:
+        raw_items = data.get('text') or data.get('input') or ''
+    if isinstance(raw_items, str):
+        labels = [item['label'] for item in parse_login_queue_text(raw_items)['items']]
+    elif isinstance(raw_items, list):
+        candidates = []
+        for item in raw_items:
+            if isinstance(item, dict):
+                candidates.append(item.get('label') or item.get('username') or item.get('screen_name') or '')
+            else:
+                candidates.append(item)
+        labels = []
+        seen = set()
+        for candidate in candidates:
+            label = sanitize_login_queue_label(candidate)
+            if not label:
+                continue
+            key = label.lower()
+            if key in seen:
+                continue
+            labels.append(label)
+            seen.add(key)
+    else:
+        labels = []
+    if not labels:
+        raise HTTPException(status_code=400, detail='请至少填写一个用户名或备注；不要粘贴密码、邮箱密码或 2FA 链接。')
+    if len(labels) > 20:
+        raise HTTPException(status_code=400, detail='一次最多加入 20 个账号到登录队列。')
+    return labels
+
+
+def login_queue_public_item(item):
+    return {
+        'id': item['id'],
+        'label': item['label'],
+        'status': item['status'],
+        'message': item.get('message') or '',
+        'token': item.get('token') or '',
+        'screen_name': item.get('screen_name') or '',
+        'created_at': item['created_at'],
+        'started_at': item.get('started_at'),
+        'finished_at': item.get('finished_at'),
+        'expires_in': max(0, int(item.get('expires_at', 0) - time.time())) if item.get('expires_at') else 0,
+    }
+
+
+def login_queue_payload():
+    with login_queue_lock:
+        return {
+            'items': [login_queue_public_item(item) for item in login_queue_items],
+            'active': next((login_queue_public_item(item) for item in login_queue_items if item['status'] == 'running'), None),
+        }
+
+
+def login_queue_payload_with_callback(request):
+    payload = login_queue_payload()
+    base_url = public_base_url(request)
+    payload['callback_url'] = f'{base_url}/api/accounts/local-browser-login/complete'
+    return payload
+
+
+def login_queue_find_item(queue_id):
+    for item in login_queue_items:
+        if item['id'] == queue_id:
+            return item
+    return None
+
+
+def login_queue_start_next_locked(request=None, user_id=None):
+    cleanup_local_browser_login_sessions()
+    running = next((item for item in login_queue_items if item['status'] == 'running'), None)
+    if running:
+        return running
+    pending = next((item for item in login_queue_items if item['status'] == 'pending'), None)
+    if not pending:
+        return None
+    token = secrets.token_urlsafe(32)
+    expires_at = time.time() + LOCAL_BROWSER_LOGIN_TIMEOUT_SECONDS
+    pending.update(
+        {
+            'status': 'running',
+            'message': '等待本地登录助手打开 Chrome。请手动完成 X 登录和 2FA。',
+            'token': token,
+            'started_at': time.time(),
+            'expires_at': expires_at,
+            'user_id': user_id or pending.get('user_id'),
+        }
+    )
+    local_browser_login_sessions[token] = {
+        'status': 'pending',
+        'message': f'队列 #{pending["id"]}：等待本地登录助手打开 Chrome。',
+        'created_at': time.time(),
+        'expires_at': expires_at,
+        'user_id': user_id or pending.get('user_id'),
+        'queue_id': pending['id'],
+        'label': pending['label'],
+    }
+    return pending
+
+
+def login_queue_mark_terminal_from_payload(queue_id, payload, user_id=None):
+    with local_browser_login_lock:
+        with login_queue_lock:
+            item = login_queue_find_item(int(queue_id))
+            if item and item['status'] == 'running':
+                item['status'] = payload.get('status')
+                item['message'] = payload.get('message') or item.get('message') or ''
+                item['screen_name'] = payload.get('screen_name') or item.get('screen_name') or ''
+                item['finished_at'] = time.time()
+                login_queue_start_next_locked(user_id=user_id)
+
+
+def login_queue_sync_expired_locked(user_id=None):
+    cleanup_local_browser_login_sessions()
+    changed = False
+    for item in login_queue_items:
+        if item['status'] != 'running':
+            continue
+        token = item.get('token')
+        session = local_browser_login_sessions.get(token) if token else None
+        if session and session.get('status') in {'expired', 'failed', 'cancelled'}:
+            item['status'] = session['status']
+            item['message'] = session.get('message') or item.get('message') or ''
+            item['finished_at'] = time.time()
+            changed = True
+        elif not session and item.get('expires_at') and time.time() > item['expires_at']:
+            item['status'] = 'expired'
+            item['message'] = '本地 Chrome 授权登录已超时，请重新开始。'
+            item['finished_at'] = time.time()
+            changed = True
+    if changed:
+        login_queue_start_next_locked(user_id=user_id)
+    return changed
 HEALTH_CHECK_INTERVAL = int(os.environ.get('TW_WEB_HEALTH_INTERVAL', '900') or 900)
 TASK_RETRY_DELAY_SECONDS = int(os.environ.get('TW_WEB_RETRY_DELAY_SECONDS', '30') or 30)
 WORKER_CONCURRENCY = max(1, int(os.environ.get('TW_WORKER_CONCURRENCY', '1') or 1))
@@ -3650,6 +3871,8 @@ def run_task(task, worker_id='worker-1'):
                 'auth_token': account['auth_token'],
                 'ct0': account['ct0'],
                 'cookie': account['cookie'],
+                'user_agent': account['user_agent'] if 'user_agent' in account.keys() else None,
+                'accept_language': account['accept_language'] if 'accept_language' in account.keys() else None,
             },
             f,
             ensure_ascii=False,
@@ -3675,6 +3898,9 @@ def run_task(task, worker_id='worker-1'):
     child_env.setdefault('TW_MEDIA_DOWNLOAD_RETRIES', str(MEDIA_DOWNLOAD_RETRIES))
     child_env.setdefault('TW_DEFAULT_MAX_CONCURRENT_REQUESTS', str(DEFAULT_MAX_CONCURRENT_REQUESTS))
     child_env.setdefault('TW_MAX_CONCURRENT_REQUESTS_CAP', str(MAX_CONCURRENT_REQUESTS_CAP))
+    # 实时数据展示：注入任务 ID 和数据库路径，供爬虫脚本双写
+    child_env['TW_TASK_ID'] = str(task['id'])
+    child_env['TW_REALTIME_DB_PATH'] = str(DB_PATH)
     with open(log_path, 'a', encoding='utf-8', errors='replace') as log_file:
         log_file.write(f'[{now()}] 启动任务 #{task["id"]}: {task["title"]}\n')
         log_file.flush()
@@ -5128,6 +5354,9 @@ async def api_local_browser_login_start(request: Request, user=Depends(require_a
 def api_local_browser_login_status(token: str, user=Depends(require_api_admin)):
     with local_browser_login_lock:
         payload = local_browser_login_payload(token)
+        queue_id = local_browser_login_sessions.get(token, {}).get('queue_id')
+    if queue_id and payload.get('status') in {'completed', 'failed', 'expired', 'cancelled'}:
+        login_queue_mark_terminal_from_payload(queue_id, payload, user_id=user['id'])
     return payload
 
 
@@ -5169,6 +5398,15 @@ async def api_local_browser_login_complete(request: Request):
         if error:
             session['status'] = 'failed'
             session['message'] = redact_sensitive(error)
+            queue_id = session.get('queue_id')
+            if queue_id:
+                with login_queue_lock:
+                    item = login_queue_find_item(int(queue_id))
+                    if item:
+                        item['status'] = 'failed'
+                        item['message'] = session['message']
+                        item['finished_at'] = time.time()
+                    login_queue_start_next_locked(user_id=session.get('user_id'))
             return local_browser_login_payload(token)
         if not auth_token or not ct0:
             session['status'] = 'running'
@@ -5181,14 +5419,121 @@ async def api_local_browser_login_complete(request: Request):
         if not session:
             raise HTTPException(status_code=404, detail='本地授权登录已不存在或已过期')
         final_screen_name = checked_screen_name or screen_name
-        save_account(final_screen_name or 'Local Chrome Login', auth_token, ct0, final_screen_name)
+        label = session.get('label') or final_screen_name or 'Local Chrome Login'
+        save_account(label, auth_token, ct0, final_screen_name)
         session['status'] = 'completed'
         if ok:
             session['message'] = '登录成功，账号已保存。'
         else:
             session['message'] = f'已获取登录 Cookie 并保存账号；账号名称暂未识别，后续可在账号检测中更新状态。校验提示：{redact_sensitive(validation_error)}'
         session['screen_name'] = final_screen_name or ''
+        queue_id = session.get('queue_id')
+        if queue_id:
+            with login_queue_lock:
+                item = login_queue_find_item(int(queue_id))
+                if item:
+                    item['status'] = 'completed'
+                    item['message'] = session['message']
+                    item['screen_name'] = final_screen_name or ''
+                    item['finished_at'] = time.time()
+                login_queue_start_next_locked(user_id=session.get('user_id'))
         return local_browser_login_payload(token)
+
+
+@app.post('/api/accounts/login-queue/parse')
+async def api_parse_login_queue(request: Request, user=Depends(require_api_admin)):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return parse_login_queue_text(data.get('text') or data.get('input') or '')
+
+
+@app.post('/api/accounts/login-queue')
+async def api_create_login_queue(request: Request, user=Depends(require_api_admin)):
+    if not browser_login_available():
+        raise HTTPException(status_code=403, detail='浏览器登录已被 TW_WEB_ENABLE_BROWSER_LOGIN=0 禁用。')
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    labels = normalize_login_queue_labels(data)
+    created_at = time.time()
+    global login_queue_counter
+    with local_browser_login_lock:
+        with login_queue_lock:
+            for label in labels:
+                login_queue_counter += 1
+                login_queue_items.append(
+                    {
+                        'id': login_queue_counter,
+                        'label': label,
+                        'status': 'pending',
+                        'message': '等待登录',
+                        'created_at': created_at,
+                        'user_id': user['id'],
+                    }
+                )
+            login_queue_start_next_locked(user_id=user['id'])
+    return login_queue_payload_with_callback(request)
+
+
+@app.get('/api/accounts/login-queue/status')
+def api_login_queue_status(request: Request, user=Depends(require_api_admin)):
+    with local_browser_login_lock:
+        with login_queue_lock:
+            login_queue_sync_expired_locked(user_id=user['id'])
+    return login_queue_payload_with_callback(request)
+
+
+@app.post('/api/accounts/login-queue/{queue_id}/skip')
+def api_skip_login_queue_item(queue_id: int, request: Request, user=Depends(require_api_admin)):
+    with local_browser_login_lock:
+        with login_queue_lock:
+            item = login_queue_find_item(queue_id)
+            if not item:
+                raise HTTPException(status_code=404, detail='登录队列项不存在')
+            if item['status'] not in {'completed', 'skipped'}:
+                token = item.get('token')
+                if token and token in local_browser_login_sessions:
+                    local_browser_login_sessions[token]['status'] = 'cancelled'
+                    local_browser_login_sessions[token]['message'] = '队列项已跳过。'
+                item['status'] = 'skipped'
+                item['message'] = '已跳过'
+                item['finished_at'] = time.time()
+                login_queue_start_next_locked(user_id=user['id'])
+    return login_queue_payload_with_callback(request)
+
+
+@app.post('/api/accounts/login-queue/{queue_id}/retry')
+def api_retry_login_queue_item(queue_id: int, request: Request, user=Depends(require_api_admin)):
+    with local_browser_login_lock:
+        with login_queue_lock:
+            item = login_queue_find_item(queue_id)
+            if not item:
+                raise HTTPException(status_code=404, detail='登录队列项不存在')
+            if item['status'] == 'completed':
+                raise HTTPException(status_code=409, detail='已完成的队列项不能重试')
+            if item['status'] == 'running':
+                pass
+            else:
+                old_token = item.get('token')
+                if old_token and old_token in local_browser_login_sessions:
+                    local_browser_login_sessions.pop(old_token, None)
+                item.update(
+                    {
+                        'status': 'pending',
+                        'message': '等待登录',
+                        'token': '',
+                        'screen_name': '',
+                        'started_at': None,
+                        'finished_at': None,
+                        'expires_at': None,
+                        'user_id': user['id'],
+                    }
+                )
+                login_queue_start_next_locked(user_id=user['id'])
+    return login_queue_payload_with_callback(request)
 
 
 @app.post('/api/accounts/browser-login')

@@ -54,26 +54,45 @@ class csv_gen():
     def __init__(self, save_path:str) -> None:
         self.f = open(f'{save_path}{datetime.now().strftime("%Y-%m-%d %H-%M-%S")}-Reply.csv', 'w', encoding='utf-8-sig', newline='')
         self.writer = csv.writer(self.f)
+        from csv_gen import RealtimeWriter
+        self.realtime = RealtimeWriter()
 
         #初始化
         self.writer.writerow(['Run Time : ' + datetime.now().strftime('%Y-%m-%d %H-%M-%S')])
 
-        main_par = ['Parent Tweet URL', 'Replier Display Name', 'Replier User Name', 'Reply Date', 'Reply Content', 'Reply URL', 
+        main_par = ['Parent Tweet URL', 'Replier Display Name', 'Replier User Name', 'Reply Date', 'Reply Content', 'Reply URL',
                     'Reply Favorite Count', 'Reply Retweet Count', 'Reply Reply Count']
 
         self.writer.writerow(main_par)
 
     def csv_close(self):
+        self.realtime.flush()
         self.f.close()
 
     def stamp2time(self, msecs_stamp:int) -> str:
         timeArray = time.localtime(msecs_stamp/1000)
         otherStyleTime = time.strftime("%Y-%m-%d %H:%M", timeArray)
         return otherStyleTime
-    
+
     def data_input(self, main_par_info:list) -> None:   #数据格式参见 main_par
         main_par_info[3] = self.stamp2time(main_par_info[3])    #传进来的是 int 时间戳, 故转换一下
         self.writer.writerow(main_par_info)
+
+        # 同时写入实时数据库（评论字段映射到统一 schema）
+        # main_par_info: [parent_url, display_name, user_name, reply_date, content, reply_url, fav, rt, reply]
+        self.realtime.add([
+            main_par_info[3],  # tweet_date (reply date)
+            main_par_info[1],  # display_name
+            main_par_info[2],  # user_name
+            main_par_info[5],  # tweet_url (reply url)
+            '',                # media_type
+            '',                # media_url
+            '',                # saved_filename
+            main_par_info[4],  # tweet_content (reply content)
+            main_par_info[6],  # favorite_count
+            main_par_info[7],  # retweet_count
+            main_par_info[8],  # reply_count
+        ])
 
 def download_control(media_lst):
     async def _main():

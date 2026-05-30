@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Eye, ExternalLink, FileArchive, FolderKanban, Image, Info, Link2, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, Search, ShieldCheck, Play, Square, Target, TrendingUp, Video, X, Zap } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -8,7 +8,7 @@ import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
-import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskResultItem, TaskResultMedia, TaskType } from './lib/types';
+import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, LoginQueueItem, LoginQueueParseResponse, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskResultItem, TaskResultMedia, TaskType } from './lib/types';
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
 import { defaultRunTimeRange, defaultTaskTimeRange, presetFromTimeRange, rangeFromPreset, splitTimeRange, timeRangeError, TIME_PRESETS, todayString, type TimePreset } from './lib/timeRange';
@@ -19,6 +19,7 @@ type HeatmapMetric = 'count' | 'media_count' | 'task_count';
 type HeatmapDays = 1 | 7 | 30;
 
 const USABLE_ACCOUNT_STATUSES = new Set(['active', 'unknown', 'check_failed']);
+const LOGIN_QUEUE_TERMINAL_STATUSES = new Set(['completed', 'failed', 'expired', 'cancelled', 'skipped']);
 
 const DEFAULT_TASK_FORM: TaskFormValues = {
   task_type: 'benchmark_account',
@@ -129,7 +130,7 @@ const NAV_ITEMS = [
 function statusTone(status: string): BadgeTone {
   if (status === 'completed' || status === 'active' || status === 'finished') return 'success';
   if (status === 'running') return 'primary';
-  if (status === 'queued' || status === 'unknown' || status === 'check_failed' || status === 'rate_limited' || status === 'partial_failed' || status === 'network_failed' || status === 'stopping' || status === 'disabled') return 'warning';
+  if (status === 'queued' || status === 'pending' || status === 'unknown' || status === 'check_failed' || status === 'rate_limited' || status === 'partial_failed' || status === 'network_failed' || status === 'stopping' || status === 'disabled' || status === 'helper_missing') return 'warning';
   if (status === 'failed' || status === 'cancelled' || status === 'expired' || status === 'auth_expired' || status === 'target_unavailable' || status === 'api_changed') return 'danger';
   return 'neutral';
 }
@@ -153,6 +154,9 @@ function statusLabel(status: string) {
     check_failed: '检测异常',
     expired: '已失效',
     disabled: '已停用',
+    pending: '等待中',
+    skipped: '已跳过',
+    helper_missing: '助手未启动',
     idle: '空闲',
     stopping: '停止中',
     stopped: '已停止',
@@ -183,6 +187,9 @@ function statusDescription(status: string) {
     check_failed: '检测请求异常，账号暂不禁用。',
     expired: '当前账号已失效。',
     disabled: '当前代理已停用。',
+    pending: '等待前一个登录窗口完成。',
+    skipped: '已从队列跳过。',
+    helper_missing: '本地登录助手没有响应。',
     idle: '当前没有运行中的任务。',
     stopping: '正在停止当前任务。',
     stopped: '任务已停止。',
@@ -2590,6 +2597,10 @@ function AccountsPage() {
   const [browserLoginToken, setBrowserLoginToken] = useState('');
   const [browserLoginStatus, setBrowserLoginStatus] = useState('');
   const [browserLoginMessage, setBrowserLoginMessage] = useState('');
+  const [loginQueueText, setLoginQueueText] = useState('');
+  const [loginQueuePreview, setLoginQueuePreview] = useState<LoginQueueParseResponse | null>(null);
+  const [queueHelperError, setQueueHelperError] = useState('');
+  const startedQueueTokenRef = useRef('');
   const addAccount = useMutation({
     mutationFn: () => api.addAccount(form),
     onSuccess: () => {
@@ -2673,6 +2684,68 @@ function AccountsPage() {
     },
     onError: (err: Error) => setError(err.message),
   });
+  const loginQueueQuery = useQuery({
+    queryKey: ['login-queue'],
+    queryFn: () => api.loginQueueStatus(),
+    refetchInterval: 2500,
+  });
+  const parseLoginQueue = useMutation({
+    mutationFn: () => api.parseLoginQueueText({ text: loginQueueText }),
+    onSuccess: (res) => {
+      setError('');
+      setLoginQueuePreview(res);
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const createLoginQueue = useMutation({
+    mutationFn: () => api.createLoginQueue({ labels: (loginQueuePreview?.items || []).map((item) => item.label) }),
+    onSuccess: () => {
+      setError('');
+      setQueueHelperError('');
+      setLoginQueueText('');
+      setLoginQueuePreview(null);
+      queryClient.invalidateQueries({ queryKey: ['login-queue'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const skipLoginQueueItem = useMutation({
+    mutationFn: (id: number) => api.skipLoginQueueItem(id),
+    onSuccess: () => {
+      setQueueHelperError('');
+      queryClient.invalidateQueries({ queryKey: ['login-queue'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const retryLoginQueueItem = useMutation({
+    mutationFn: (id: number) => api.retryLoginQueueItem(id),
+    onSuccess: () => {
+      setQueueHelperError('');
+      queryClient.invalidateQueries({ queryKey: ['login-queue'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+
+  const startLoginQueueHelper = (active: LoginQueueItem) => {
+    if (!active.token || LOGIN_QUEUE_TERMINAL_STATUSES.has(active.status)) return;
+    startedQueueTokenRef.current = active.token;
+    setQueueHelperError('');
+    fetch('http://127.0.0.1:18765/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: active.token,
+        callback_url: loginQueueQuery.data?.callback_url,
+        expires_in: active.expires_in,
+      }),
+    })
+      .then(async (response) => {
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          setQueueHelperError(body.message || '本地登录助手没有响应，请先启动助手后重试当前队列项。');
+        }
+      })
+      .catch(() => setQueueHelperError('未检测到本地登录助手。请先双击 start_local_login_helper.bat，保持窗口打开后重试当前队列项。'));
+  };
   const checkAccount = useMutation({
     mutationFn: (id: number) => api.checkAccount(id),
     onSuccess: () => {
@@ -2700,6 +2773,13 @@ function AccountsPage() {
     }
   }, [browserLoginStatusQuery.data, queryClient]);
 
+  useEffect(() => {
+    const active = loginQueueQuery.data?.active;
+    if (!active?.token || LOGIN_QUEUE_TERMINAL_STATUSES.has(active.status)) return;
+    if (startedQueueTokenRef.current === active.token) return;
+    startLoginQueueHelper(active);
+  }, [loginQueueQuery.data?.active?.token, loginQueueQuery.data?.active?.status, loginQueueQuery.data?.active?.expires_in, loginQueueQuery.data?.callback_url]);
+
   const browserLoginTone = browserLoginStatus === 'completed'
     ? 'success'
     : ['failed', 'expired', 'helper_missing'].includes(browserLoginStatus)
@@ -2714,6 +2794,11 @@ function AccountsPage() {
     expired: '已超时',
     cancelled: '已取消',
   }[browserLoginStatus] || 'starting';
+  const loginQueueItems = loginQueueQuery.data?.items || [];
+  const activeQueueItem = loginQueueQuery.data?.active;
+  const pendingQueueCount = loginQueueItems.filter((item) => item.status === 'pending').length;
+  const completedQueueCount = loginQueueItems.filter((item) => item.status === 'completed').length;
+  const failedQueueCount = loginQueueItems.filter((item) => ['failed', 'expired', 'cancelled'].includes(item.status)).length;
 
   const retryLocalHelper = () => {
     browserLogin.mutate();
@@ -2781,6 +2866,147 @@ function AccountsPage() {
           </CardContent>
         </Card>
       )}
+      <Card>
+        <CardHeader>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h3 className="font-semibold">批量手动登录队列</h3>
+              <p className="mt-1 text-sm text-[hsl(var(--muted))]">逐个打开本地 Chrome 登录窗口；密码、邮箱验证和 2FA 由你在窗口里手动完成。</p>
+            </div>
+            {activeQueueItem ? (
+              <Badge tone="primary">正在处理 #{activeQueueItem.id}</Badge>
+            ) : (
+              <Badge tone="neutral">队列空闲</Badge>
+            )}
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 lg:grid-cols-[1.4fr_1fr]">
+            <Field label="用户名 / 备注">
+              <Textarea
+                rows={5}
+                value={loginQueueText}
+                onChange={(e) => {
+                  setLoginQueueText(e.target.value);
+                  setLoginQueuePreview(null);
+                }}
+                placeholder="可粘贴原始账号文本；系统只提取用户名，密码、邮箱、Cookie、2FA 链接会被丢弃"
+              />
+            </Field>
+            <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+              <InfoCard title="等待登录" value={String(pendingQueueCount)} />
+              <InfoCard title="已保存" value={String(completedQueueCount)} />
+              <InfoCard title="需处理" value={String(failedQueueCount)} />
+            </div>
+          </div>
+          {queueHelperError && (
+            <div className="rounded-lg border border-[hsl(var(--warning))] bg-[rgba(251,191,36,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
+              {queueHelperError}
+            </div>
+          )}
+          {loginQueuePreview && (
+            <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-4">
+              <div className="grid gap-3 sm:grid-cols-4">
+                <InfoCard title="将加入" value={String(loginQueuePreview.items.length)} />
+                <InfoCard title="重复项" value={String(loginQueuePreview.duplicates.length)} />
+                <InfoCard title="已跳过" value={String(loginQueuePreview.skipped.length)} />
+                <InfoCard title="已移除敏感字段" value={String(loginQueuePreview.sensitive_fields_removed)} />
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {loginQueuePreview.items.map((item) => (
+                  <Badge key={item.label} tone="primary">{item.label}</Badge>
+                ))}
+                {!loginQueuePreview.items.length && (
+                  <span className="text-sm text-[hsl(var(--muted))]">没有识别到可加入队列的用户名。</span>
+                )}
+              </div>
+              {(loginQueuePreview.duplicates.length > 0 || loginQueuePreview.skipped.length > 0) && (
+                <div className="mt-3 text-xs text-[hsl(var(--muted))]">
+                  重复用户名不会重复加入；无法识别的片段已跳过，敏感内容不会回显。
+                </div>
+              )}
+            </div>
+          )}
+          {activeQueueItem && (
+            <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-4 py-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold">当前：{activeQueueItem.label}</div>
+                  <div className="mt-1 text-xs text-[hsl(var(--muted))]">
+                    {activeQueueItem.message || '等待你在本地 Chrome 窗口完成登录'} · 剩余 {activeQueueItem.expires_in}s
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => startLoginQueueHelper(activeQueueItem)}>
+                    <RefreshCcw className="h-4 w-4" />
+                    重开窗口
+                  </Button>
+                  <Button variant="secondary" size="sm" onClick={() => loginQueueQuery.refetch()}>
+                    刷新状态
+                  </Button>
+                  <Button variant="danger" size="sm" onClick={() => skipLoginQueueItem.mutate(activeQueueItem.id)} disabled={skipLoginQueueItem.isPending}>
+                    跳过
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
+          <div className="flex flex-wrap justify-end gap-2">
+            <Button variant="secondary" onClick={() => parseLoginQueue.mutate()} disabled={parseLoginQueue.isPending || !loginQueueText.trim()}>
+              <Search className="h-4 w-4" />
+              解析预览
+            </Button>
+            <Button onClick={() => createLoginQueue.mutate()} disabled={createLoginQueue.isPending || !loginQueuePreview?.items.length}>
+              <CircleUserRound className="h-4 w-4" />
+              确认加入队列
+            </Button>
+          </div>
+          <div className="overflow-auto rounded-lg border border-[hsl(var(--line))]">
+            <table className="w-full min-w-[760px] border-collapse text-sm">
+              <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
+                <tr>
+                  <th className="px-4 py-3">队列</th>
+                  <th className="px-4 py-3">用户名 / 备注</th>
+                  <th className="px-4 py-3">状态</th>
+                  <th className="px-4 py-3">结果</th>
+                  <th className="px-4 py-3"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {loginQueueItems.map((item) => (
+                  <tr key={item.id} className="border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]">
+                    <td className="px-4 py-3">#{item.id}</td>
+                    <td className="px-4 py-3 font-medium">{item.label}</td>
+                    <td className="px-4 py-3">
+                      <Badge tone={statusTone(item.status)}>{statusLabel(item.status)}</Badge>
+                    </td>
+                    <td className="max-w-[360px] px-4 py-3 text-[hsl(var(--muted))]">
+                      <div className="truncate">{item.screen_name ? `@${item.screen_name}` : item.message || '-'}</div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex justify-end gap-2">
+                        {['failed', 'expired', 'cancelled', 'skipped'].includes(item.status) && (
+                          <Button variant="secondary" size="sm" onClick={() => retryLoginQueueItem.mutate(item.id)} disabled={retryLoginQueueItem.isPending}>
+                            重试
+                          </Button>
+                        )}
+                        {['pending', 'running'].includes(item.status) && (
+                          <Button variant="danger" size="sm" onClick={() => skipLoginQueueItem.mutate(item.id)} disabled={skipLoginQueueItem.isPending}>
+                            跳过
+                          </Button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {!loginQueueItems.length && (
+                  <tr><td className="px-4 py-8 text-center text-[hsl(var(--muted))]" colSpan={5}>还没有登录队列</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
       <div className="grid gap-3 md:grid-cols-3">
         <InfoCard title="可用账号" value={String(accounts.filter((account) => USABLE_ACCOUNT_STATUSES.has(account.status)).length)} />
         <InfoCard title="平均可用分" value={capacityAccounts.length ? String(averageCapacity) : '-'} />
