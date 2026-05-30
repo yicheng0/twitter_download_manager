@@ -304,8 +304,21 @@ if %ERRORLEVEL% NEQ 0 (
   echo "%APP_DIR%\\.local-login-helper-venv\\Scripts\\python.exe" "%APP_DIR%\\local_login_helper.py"
 ) > "%APP_DIR%\\run_local_login_helper.bat"
 
+(
+  echo @echo off
+  echo setlocal
+  echo if exist "%APP_DIR%\\run_local_login_helper.bat" ^(
+  echo   start "" /min "%APP_DIR%\\run_local_login_helper.bat"
+  echo ^)
+) > "%APP_DIR%\\launch_local_login_helper.bat"
+
 echo Registering Windows startup task...
 schtasks /Create /TN "TwitterDownloadLocalLoginHelper" /TR "\\"%APP_DIR%\\run_local_login_helper.bat\\"" /SC ONLOGON /RL LIMITED /F >nul 2>nul
+
+echo Registering browser launch protocol...
+reg add "HKCU\\Software\\Classes\\tw-login-helper" /ve /d "URL:Twitter Download Login Helper" /f >nul
+reg add "HKCU\\Software\\Classes\\tw-login-helper" /v "URL Protocol" /d "" /f >nul
+reg add "HKCU\\Software\\Classes\\tw-login-helper\\shell\\open\\command" /ve /d "\\"%APP_DIR%\\launch_local_login_helper.bat\\" \\"%%1\\"" /f >nul
 
 echo Starting helper in background...
 start "" /min "%APP_DIR%\\run_local_login_helper.bat"

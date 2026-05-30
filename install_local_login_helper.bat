@@ -4,6 +4,7 @@ set PYTHONUTF8=1
 set "APP_DIR=%LOCALAPPDATA%\TwitterDownloadLocalLoginHelper"
 set "SOURCE_DIR=%~dp0"
 set "HELPER_SOURCE=%SOURCE_DIR%local_login_helper.py"
+set "LAUNCHER_SOURCE=%SOURCE_DIR%launch_local_login_helper.bat"
 set "VPS_HOSTS=%TW_LOCAL_LOGIN_ALLOWED_HOSTS%"
 
 if "%VPS_HOSTS%"=="" set "VPS_HOSTS=twitter.198-12-70-103.nip.io"
@@ -27,6 +28,7 @@ if not exist "%HELPER_SOURCE%" (
 
 if not exist "%APP_DIR%" mkdir "%APP_DIR%"
 copy /Y "%HELPER_SOURCE%" "%APP_DIR%\local_login_helper.py" >nul
+if exist "%LAUNCHER_SOURCE%" copy /Y "%LAUNCHER_SOURCE%" "%APP_DIR%\launch_local_login_helper.bat" >nul
 
 if not exist "%APP_DIR%\.local-login-helper-venv\Scripts\python.exe" (
   echo Creating helper Python environment...
@@ -62,6 +64,11 @@ if %ERRORLEVEL% NEQ 0 (
 
 echo Registering Windows startup task...
 schtasks /Create /TN "TwitterDownloadLocalLoginHelper" /TR "\"%APP_DIR%\run_local_login_helper.bat\"" /SC ONLOGON /RL LIMITED /F >nul 2>nul
+
+echo Registering browser launch protocol...
+reg add "HKCU\Software\Classes\tw-login-helper" /ve /d "URL:Twitter Download Login Helper" /f >nul
+reg add "HKCU\Software\Classes\tw-login-helper" /v "URL Protocol" /d "" /f >nul
+reg add "HKCU\Software\Classes\tw-login-helper\shell\open\command" /ve /d "\"%APP_DIR%\launch_local_login_helper.bat\" \"%%1\"" /f >nul
 
 echo Starting helper in background...
 start "" /min "%APP_DIR%\run_local_login_helper.bat"

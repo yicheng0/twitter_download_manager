@@ -249,10 +249,10 @@ function accountErrorSummary(account: Account) {
 function localHelperErrorMessage(err: unknown) {
   const raw = err instanceof Error ? err.message : String(err || '');
   if (!raw || raw === 'Failed to fetch' || raw.includes('Failed to fetch')) {
-    return '这台电脑未检测到本地授权助手。请先下载并运行安装器，安装完成后点击“我已启动，重试打开 Chrome”。';
+    return '这台电脑未检测到本地授权助手。如果已经安装，点击“自动唤起并打开 Chrome”；如果没安装，先运行一次安装器。';
   }
   if (raw.includes('NetworkError') || raw.includes('Load failed')) {
-    return '这台电脑未检测到本地授权助手。请先下载并运行安装器，安装完成后点击“我已启动，重试打开 Chrome”。';
+    return '这台电脑未检测到本地授权助手。如果已经安装，点击“自动唤起并打开 Chrome”；如果没安装，先运行一次安装器。';
   }
   return raw;
 }
@@ -3236,6 +3236,11 @@ function AccountsPage() {
         : '这台电脑上的本地登录助手没有响应。请先启动本地登录助手，然后重试；VPS 授权任务仍在等待。');
     }
   };
+  const launchInstalledLocalHelper = async () => {
+    window.location.href = 'tw-login-helper://start';
+    await new Promise((resolve) => window.setTimeout(resolve, 1200));
+    await retryLocalHelper();
+  };
 
   return (
     <div className="space-y-4">
@@ -3274,13 +3279,13 @@ function AccountsPage() {
             {browserLoginStatus === 'helper_missing' ? (
               <div className="space-y-3 rounded-lg border border-[hsl(var(--warning))] bg-[rgba(251,191,36,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
                 <div className="font-semibold">这台电脑未检测到本地授权助手</div>
-                <div>{browserLoginMessage || '请先下载并运行安装器，安装完成后再重试打开本机 Chrome。'}</div>
+                <div>{browserLoginMessage || '如果已经安装，直接自动唤起本地助手；第一次使用才需要运行一次安装器。'}</div>
                 <div className="grid gap-2 sm:grid-cols-2">
                   <div className="rounded-md border border-[rgba(251,191,36,0.28)] bg-[rgba(15,23,42,0.38)] px-3 py-2">
-                    1. 下载并运行本地授权助手安装器
+                    推荐：已安装用户直接自动唤起本地助手
                   </div>
                   <div className="rounded-md border border-[rgba(251,191,36,0.28)] bg-[rgba(15,23,42,0.38)] px-3 py-2">
-                    2. 安装完成后回到这里重试打开 Chrome
+                    首次使用：运行一次安装器，之后不用重复下载
                   </div>
                 </div>
               </div>
@@ -3300,11 +3305,11 @@ function AccountsPage() {
             <div className="flex flex-wrap gap-2">
               {browserLoginStatus === 'helper_missing' && (
                 <>
-                  <Button variant="secondary" size="sm" type="button" onClick={() => { window.location.href = '/api/accounts/local-browser-login/helper/install'; }}>
-                    下载/启动本地授权助手
+                  <Button variant="secondary" size="sm" type="button" onClick={launchInstalledLocalHelper} disabled={browserLogin.isPending}>
+                    自动唤起并打开 Chrome
                   </Button>
-                  <Button variant="secondary" size="sm" onClick={retryLocalHelper} disabled={browserLogin.isPending}>
-                    我已启动，重试打开 Chrome
+                  <Button variant="secondary" size="sm" type="button" onClick={() => { window.location.href = '/api/accounts/local-browser-login/helper/install'; }}>
+                    首次安装本地授权助手
                   </Button>
                 </>
               )}

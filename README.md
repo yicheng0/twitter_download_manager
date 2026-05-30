@@ -115,11 +115,11 @@ The operator flow is:
 
 1. Open the VPS Web console account page from the Windows computer that will authorize the account.
 2. Click "Local Authorization Login".
-3. If the page says the local helper is not detected, click "Download/Start Local Authorization Helper" and run the downloaded installer.
-4. After installation, click "I have started it, retry Chrome".
+3. If the helper has already been installed, click "Auto launch and open Chrome".
+4. First-time users click "Install Local Authorization Helper" once and run the downloaded installer.
 5. Complete X/Twitter password, email verification, or 2FA in the Chrome window that opens locally.
 
-The installer stores the helper under the user's local AppData directory, starts it in the background, and registers a Windows logon startup task. When `auth_token` and `ct0` are detected, the helper posts them to the VPS callback URL and the account is saved automatically. The helper listens on `127.0.0.1:18765` and only returns the session fields required by this project.
+The installer stores the helper under the user's local AppData directory, starts it in the background, registers a Windows logon startup task, and registers the `tw-login-helper://` browser launch protocol. After the first install, the Web console can launch the local helper directly. When `auth_token` and `ct0` are detected, the helper posts them to the VPS callback URL and the account is saved automatically. The helper listens on `127.0.0.1:18765` and only returns the session fields required by this project.
 
 Advanced users can also start the helper manually from a checked-out project directory:
 
