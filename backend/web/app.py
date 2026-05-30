@@ -3222,11 +3222,26 @@ def select_account_for_task(preferred_account_id=0):
         return select_account_for_task_in_conn(conn, preferred_account_id)
 
 
+def blogger_category_payload(row):
+    return {
+        'id': row['id'],
+        'name': row['name'],
+        'color': row['color'],
+        'created_at': row['created_at'],
+        'updated_at': row['updated_at'],
+    }
+
+
 def blogger_payload(row):
     return {
         'id': row['id'],
         'screen_name': row['screen_name'],
         'display_name': row['display_name'],
+        'avatar_url': row['avatar_url'] if 'avatar_url' in row.keys() else None,
+        'profile_updated_at': row['profile_updated_at'] if 'profile_updated_at' in row.keys() else None,
+        'category_id': row['category_id'] if 'category_id' in row.keys() else None,
+        'category_name': row['category_name'] if 'category_name' in row.keys() else None,
+        'category_color': row['category_color'] if 'category_color' in row.keys() else None,
         'default_tweet_limit': row['default_tweet_limit'],
         'last_used_at': row['last_used_at'],
         'use_count': row['use_count'],
@@ -3235,12 +3250,51 @@ def blogger_payload(row):
     }
 
 
-def upsert_tracked_blogger(conn, screen_name, display_name='', default_tweet_limit=None, mark_used=False):
+def normalize_category_id(conn, value, allow_empty=True):
+    if value in (None, ''):
+        if allow_empty:
+            return None
+        raise HTTPException(status_code=400, detail='请选择博主分类')
+    try:
+        category_id = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail='博主分类需要是有效编号')
+    if category_id <= 0:
+        return None if allow_empty else category_id
+    row = conn.execute('select id from blogger_categories where id = ?', (category_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail='所选博主分类不存在')
+    return category_id
+
+
+def normalize_category_color(value):
+    color = str(value or '').strip()
+    if re.fullmatch(r'#[0-9a-fA-F]{6}', color):
+        return color.lower()
+    return '#38bdf8'
+
+
+def blogger_query():
+    return '''
+        select tracked_bloggers.*,
+               blogger_categories.name as category_name,
+               blogger_categories.color as category_color
+        from tracked_bloggers
+        left join blogger_categories on blogger_categories.id = tracked_bloggers.category_id
+    '''
+
+
+def blogger_by_id(conn, blogger_id):
+    return conn.execute(f'{blogger_query()} where tracked_bloggers.id = ?', (blogger_id,)).fetchone()
+
+
+def upsert_tracked_blogger(conn, screen_name, display_name='', default_tweet_limit=None, mark_used=False, category_id=None, avatar_url=None, profile_updated_at=None):
     normalized = normalize_user_targets(screen_name, label='博主用户名')
     if not normalized or ',' in normalized:
         raise HTTPException(status_code=400, detail='博主用户名需要是单个用户名或主页链接')
     screen_name = normalized.lower()
     default_limit = max(1, int(default_tweet_limit or 10))
+    normalized_category_id = normalize_category_id(conn, category_id) if category_id is not None else None
     current = conn.execute('select * from tracked_bloggers where lower(screen_name) = lower(?)', (screen_name,)).fetchone()
     current_time = now()
     if current:
@@ -3248,23 +3302,38 @@ def upsert_tracked_blogger(conn, screen_name, display_name='', default_tweet_lim
             '''
             update tracked_bloggers
             set display_name = coalesce(nullif(?, ''), display_name),
+                avatar_url = coalesce(nullif(?, ''), avatar_url),
+                profile_updated_at = coalesce(?, profile_updated_at),
+                category_id = coalesce(?, category_id),
                 default_tweet_limit = ?,
                 last_used_at = case when ? then ? else last_used_at end,
                 use_count = use_count + ?,
                 updated_at = ?
             where id = ?
             ''',
-            (display_name or '', default_limit if default_tweet_limit is not None else current['default_tweet_limit'], 1 if mark_used else 0, current_time, 1 if mark_used else 0, current_time, current['id']),
+            (
+                display_name or '',
+                avatar_url or '',
+                profile_updated_at,
+                normalized_category_id,
+                default_limit if default_tweet_limit is not None else current['default_tweet_limit'],
+                1 if mark_used else 0,
+                current_time,
+                1 if mark_used else 0,
+                current_time,
+                current['id'],
+            ),
         )
-        return conn.execute('select * from tracked_bloggers where id = ?', (current['id'],)).fetchone()
+        return blogger_by_id(conn, current['id'])
     conn.execute(
         '''
-        insert into tracked_bloggers (screen_name, display_name, default_tweet_limit, last_used_at, use_count, created_at, updated_at)
-        values (?, ?, ?, ?, ?, ?, ?)
+        insert into tracked_bloggers (screen_name, display_name, avatar_url, profile_updated_at, category_id, default_tweet_limit, last_used_at, use_count, created_at, updated_at)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''',
-        (screen_name, display_name or None, default_limit, current_time if mark_used else None, 1 if mark_used else 0, current_time, current_time),
+        (screen_name, display_name or None, avatar_url or None, profile_updated_at, normalized_category_id, default_limit, current_time if mark_used else None, 1 if mark_used else 0, current_time, current_time),
     )
-    return conn.execute('select * from tracked_bloggers where lower(screen_name) = lower(?)', (screen_name,)).fetchone()
+    row = conn.execute('select id from tracked_bloggers where lower(screen_name) = lower(?)', (screen_name,)).fetchone()
+    return blogger_by_id(conn, row['id'])
 
 
 def record_task_bloggers_in_conn(conn, config):
@@ -3274,6 +3343,90 @@ def record_task_bloggers_in_conn(conn, config):
     target_limits = config.get('target_limits') if isinstance(config.get('target_limits'), dict) else {}
     for target in [item.strip() for item in targets.split(',') if item.strip()]:
         upsert_tracked_blogger(conn, target, default_tweet_limit=target_limits.get(target.lower()) or config.get('tweet_limit') or 10, mark_used=True)
+
+
+def select_blogger_profile_account_and_proxy(conn):
+    placeholders = ','.join('?' for _ in ACCOUNT_USABLE_STATUSES)
+    accounts = conn.execute(f"select * from accounts where status in ({placeholders})", tuple(ACCOUNT_USABLE_STATUSES)).fetchall()
+    candidates = [account for account in accounts if account_available_for_task(conn, account)]
+    if not candidates:
+        raise HTTPException(status_code=400, detail='没有可用于刷新博主资料的 X 账号')
+    account = sorted(candidates, key=lambda row: account_selection_score(conn, row))[0]
+    proxy = select_proxy_for_task_in_conn(conn, 0, '', account_id=account['id'])
+    proxy_value = normalize_proxy_url(proxy['proxy']) if proxy else ''
+    return account, proxy_value
+
+
+def fetch_blogger_profile(screen_name, account, proxy_value=''):
+    from backend.crawler.benchmark_down import BenchmarkAccountDownloader
+
+    config = {
+        'targets': screen_name,
+        'tweet_limit': 1,
+        'time_range': task_default_time_range(),
+        'has_retweet': False,
+        'api_budget': 2,
+        'cache_timeline_ttl_seconds': 0,
+        'cache_user_ttl_seconds': 300,
+        'proxy': proxy_value or '',
+    }
+    downloader = BenchmarkAccountDownloader(config, account['cookie'], str(TASKS_DIR / '_blogger_profile_probe'))
+    user = downloader.get_user_info(screen_name)
+    return {
+        'screen_name': str(user.get('screen_name') or screen_name).lower(),
+        'display_name': user.get('name') or '',
+        'avatar_url': user.get('avatar_url') or '',
+    }
+
+
+def refresh_blogger_profiles(blogger_ids=None, limit=50):
+    results = []
+    refreshed = 0
+    failed = 0
+    with db() as conn:
+        if blogger_ids:
+            clean_ids = [int(item) for item in blogger_ids if int(item) > 0]
+            if not clean_ids:
+                return {'refreshed': 0, 'failed': 0, 'results': []}
+            placeholders = ','.join('?' for _ in clean_ids)
+            bloggers = conn.execute(f'select * from tracked_bloggers where id in ({placeholders}) order by screen_name', clean_ids).fetchall()
+        else:
+            safe_limit = max(1, min(int(limit or 50), 200))
+            bloggers = conn.execute(
+                '''
+                select * from tracked_bloggers
+                order by case when avatar_url is null or avatar_url = '' then 0 else 1 end,
+                         coalesce(profile_updated_at, '1970-01-01 00:00:00') asc,
+                         screen_name
+                limit ?
+                ''',
+                (safe_limit,),
+            ).fetchall()
+        if not bloggers:
+            return {'refreshed': 0, 'failed': 0, 'results': []}
+        account, proxy_value = select_blogger_profile_account_and_proxy(conn)
+        for blogger in bloggers:
+            try:
+                profile = fetch_blogger_profile(blogger['screen_name'], account, proxy_value)
+                current_time = now()
+                conn.execute(
+                    '''
+                    update tracked_bloggers
+                    set screen_name = ?, display_name = coalesce(nullif(?, ''), display_name),
+                        avatar_url = coalesce(nullif(?, ''), avatar_url),
+                        profile_updated_at = ?, updated_at = ?
+                    where id = ?
+                    ''',
+                    (profile['screen_name'], profile['display_name'], profile['avatar_url'], current_time, current_time, blogger['id']),
+                )
+                refreshed += 1
+                results.append({'id': blogger['id'], 'screen_name': profile['screen_name'], 'ok': True, 'avatar_url': profile['avatar_url']})
+            except Exception as exc:
+                failed += 1
+                message = redact_sensitive(str(exc))
+                results.append({'id': blogger['id'], 'screen_name': blogger['screen_name'], 'ok': False, 'error': message})
+                append_operation_log('warning', 'blogger_profile_refresh_failed', f'刷新博主资料失败 @{blogger["screen_name"]}: {message}', error_type='blogger_profile_refresh_failed', details={'blogger_id': blogger['id']})
+    return {'refreshed': refreshed, 'failed': failed, 'results': results}
 
 
 def select_proxy_for_task_in_conn(conn, preferred_proxy_id=0, manual_proxy='', account_id=None):
@@ -6274,9 +6427,27 @@ def api_delete_result_db_config(config_id: int, user=Depends(require_api_admin))
 
 
 @app.get('/api/bloggers')
-def api_bloggers(user=Depends(require_api_user)):
+def api_bloggers(request: Request, user=Depends(require_api_user)):
+    q = str(request.query_params.get('q') or '').strip().lower()
+    category_raw = request.query_params.get('category_id')
+    clauses = []
+    params = []
+    if q:
+        clauses.append('(lower(tracked_bloggers.screen_name) like ? or lower(coalesce(tracked_bloggers.display_name, "")) like ?)')
+        params.extend([f'%{q}%', f'%{q}%'])
+    if category_raw not in (None, ''):
+        try:
+            category_id = int(category_raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail='分类筛选需要是有效编号')
+        if category_id > 0:
+            clauses.append('tracked_bloggers.category_id = ?')
+            params.append(category_id)
+        else:
+            clauses.append('tracked_bloggers.category_id is null')
+    where = f' where {" and ".join(clauses)}' if clauses else ''
     with db() as conn:
-        rows = conn.execute('select * from tracked_bloggers order by coalesce(last_used_at, updated_at) desc, screen_name').fetchall()
+        rows = conn.execute(f'{blogger_query()}{where} order by coalesce(tracked_bloggers.last_used_at, tracked_bloggers.updated_at) desc, tracked_bloggers.screen_name', params).fetchall()
     return {'bloggers': [blogger_payload(row) for row in rows]}
 
 
@@ -6289,8 +6460,17 @@ async def api_add_blogger(request: Request, user=Depends(require_api_user)):
             data.get('screen_name') or data.get('username') or '',
             display_name=str(data.get('display_name') or '').strip(),
             default_tweet_limit=parse_int_field(data.get('default_tweet_limit'), 10, '默认采集条数'),
+            category_id=data.get('category_id') if 'category_id' in data else None,
             mark_used=False,
         )
+        blogger_id = row['id']
+    if data.get('refresh_profile', True):
+        try:
+            refresh_blogger_profiles([blogger_id])
+        except Exception as exc:
+            append_operation_log('warning', 'blogger_profile_refresh_failed', f'自动刷新博主资料失败: {redact_sensitive(str(exc))}', error_type='blogger_profile_refresh_failed', details={'blogger_id': blogger_id})
+    with db() as conn:
+        row = blogger_by_id(conn, blogger_id)
     return {'blogger': blogger_payload(row)}
 
 
@@ -6301,13 +6481,16 @@ async def api_bulk_add_bloggers(request: Request, user=Depends(require_api_user)
     default_limit = parse_int_field(data.get('default_tweet_limit'), 10, '默认采集条数')
     if default_limit <= 0:
         raise HTTPException(status_code=400, detail='默认采集条数需要是大于 0 的整数')
+    refresh_profile = bool(data.get('refresh_profile', True))
     imported = []
     duplicates = []
     skipped = []
+    refresh_ids = []
     seen = set()
     from backend.crawler.benchmark_down import parse_screen_name
 
     with db() as conn:
+        category_id = normalize_category_id(conn, data.get('category_id')) if 'category_id' in data else None
         for raw in raw_lines:
             original = raw.strip()
             if not original:
@@ -6322,18 +6505,94 @@ async def api_bulk_add_bloggers(request: Request, user=Depends(require_api_user)
                 continue
             seen.add(key)
             existed = conn.execute('select id from tracked_bloggers where lower(screen_name) = lower(?)', (key,)).fetchone()
-            row = upsert_tracked_blogger(conn, key, default_tweet_limit=default_limit, mark_used=False)
+            row = upsert_tracked_blogger(conn, key, default_tweet_limit=default_limit, category_id=category_id, mark_used=False)
             item = blogger_payload(row)
             if existed:
                 duplicates.append({'screen_name': key, 'reason': '博主库已存在'})
             else:
                 imported.append(item)
+                refresh_ids.append(row['id'])
+    if refresh_profile and refresh_ids:
+        try:
+            refresh_blogger_profiles(refresh_ids[:50])
+        except Exception as exc:
+            append_operation_log('warning', 'blogger_profile_refresh_failed', f'批量导入后自动刷新博主资料失败: {redact_sensitive(str(exc))}', error_type='blogger_profile_refresh_failed', details={'count': len(refresh_ids)})
+        with db() as conn:
+            refreshed_rows = conn.execute(f'{blogger_query()} where tracked_bloggers.id in ({",".join("?" for _ in refresh_ids)})', refresh_ids).fetchall()
+            refreshed_map = {row['id']: blogger_payload(row) for row in refreshed_rows}
+            imported = [refreshed_map.get(item['id'], item) for item in imported]
     return {
         'imported': imported,
         'duplicates': duplicates,
         'skipped': skipped,
         'total': len(imported) + len(duplicates) + len(skipped),
     }
+
+
+@app.get('/api/blogger-categories')
+def api_blogger_categories(user=Depends(require_api_user)):
+    with db() as conn:
+        rows = conn.execute('select * from blogger_categories order by lower(name)').fetchall()
+    return {'categories': [blogger_category_payload(row) for row in rows]}
+
+
+@app.post('/api/blogger-categories')
+async def api_add_blogger_category(request: Request, user=Depends(require_api_user)):
+    data = await request.json()
+    name = str(data.get('name') or '').strip()
+    if not name:
+        raise HTTPException(status_code=400, detail='分类名称不能为空')
+    current_time = now()
+    try:
+        with db() as conn:
+            cursor = conn.execute(
+                'insert into blogger_categories (name, color, created_at, updated_at) values (?, ?, ?, ?)',
+                (name, normalize_category_color(data.get('color')), current_time, current_time),
+            )
+            row = conn.execute('select * from blogger_categories where id = ?', (cursor.lastrowid,)).fetchone()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail='该分类已存在')
+    return {'category': blogger_category_payload(row)}
+
+
+@app.patch('/api/blogger-categories/{category_id}')
+async def api_update_blogger_category(category_id: int, request: Request, user=Depends(require_api_user)):
+    data = await request.json()
+    with db() as conn:
+        row = conn.execute('select * from blogger_categories where id = ?', (category_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail='分类不存在')
+        name = str(data.get('name') if 'name' in data else row['name']).strip()
+        if not name:
+            raise HTTPException(status_code=400, detail='分类名称不能为空')
+        try:
+            conn.execute(
+                'update blogger_categories set name = ?, color = ?, updated_at = ? where id = ?',
+                (name, normalize_category_color(data.get('color') if 'color' in data else row['color']), now(), category_id),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(status_code=400, detail='该分类已存在')
+        row = conn.execute('select * from blogger_categories where id = ?', (category_id,)).fetchone()
+    return {'category': blogger_category_payload(row)}
+
+
+@app.delete('/api/blogger-categories/{category_id}')
+def api_delete_blogger_category(category_id: int, user=Depends(require_api_user)):
+    with db() as conn:
+        row = conn.execute('select id from blogger_categories where id = ?', (category_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail='分类不存在')
+        conn.execute('update tracked_bloggers set category_id = null, updated_at = ? where category_id = ?', (now(), category_id))
+        conn.execute('delete from blogger_categories where id = ?', (category_id,))
+    return {'ok': True}
+
+
+@app.post('/api/bloggers/refresh-profiles')
+async def api_refresh_blogger_profiles(request: Request, user=Depends(require_api_user)):
+    data = await request.json()
+    ids = data.get('ids') if isinstance(data.get('ids'), list) else None
+    limit = parse_int_field(data.get('limit'), 50, '刷新数量')
+    return refresh_blogger_profiles(ids, limit=limit)
 
 
 @app.patch('/api/bloggers/{blogger_id}')
@@ -6351,18 +6610,27 @@ async def api_update_blogger(blogger_id: int, request: Request, user=Depends(req
         default_limit = parse_int_field(data.get('default_tweet_limit') if 'default_tweet_limit' in data else row['default_tweet_limit'], 10, '默认采集条数')
         if default_limit <= 0:
             raise HTTPException(status_code=400, detail='默认采集条数需要是大于 0 的整数')
+        category_id = normalize_category_id(conn, data.get('category_id')) if 'category_id' in data else row['category_id'] if 'category_id' in row.keys() else None
         try:
             conn.execute(
                 '''
                 update tracked_bloggers
-                set screen_name = ?, display_name = ?, default_tweet_limit = ?, updated_at = ?
+                set screen_name = ?, display_name = ?, avatar_url = ?, category_id = ?, default_tweet_limit = ?, updated_at = ?
                 where id = ?
                 ''',
-                (screen_name.lower(), str(data.get('display_name') if 'display_name' in data else row['display_name'] or '').strip() or None, default_limit, now(), blogger_id),
+                (
+                    screen_name.lower(),
+                    str(data.get('display_name') if 'display_name' in data else row['display_name'] or '').strip() or None,
+                    str(data.get('avatar_url') if 'avatar_url' in data else row['avatar_url'] if 'avatar_url' in row.keys() else '').strip() or None,
+                    category_id,
+                    default_limit,
+                    now(),
+                    blogger_id,
+                ),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(status_code=400, detail='该博主已存在')
-        row = conn.execute('select * from tracked_bloggers where id = ?', (blogger_id,)).fetchone()
+        row = blogger_by_id(conn, blogger_id)
     return {'blogger': blogger_payload(row)}
 
 

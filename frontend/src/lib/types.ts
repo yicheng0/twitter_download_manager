@@ -92,9 +92,22 @@ export type TrackedBlogger = {
   id: number;
   screen_name: string;
   display_name: string | null;
+  avatar_url: string | null;
+  profile_updated_at: string | null;
+  category_id: number | null;
+  category_name: string | null;
+  category_color: string | null;
   default_tweet_limit: number;
   last_used_at: string | null;
   use_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type BloggerCategory = {
+  id: number;
+  name: string;
+  color: string;
   created_at: string;
   updated_at: string;
 };

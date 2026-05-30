@@ -1,4 +1,4 @@
-import type { Account, AccountWarmupRun, ApiError, BitBrowserImportResponse, Dashboard, DashboardHeatmapItems, HealthStatus, LocalBrowserLoginHelperStatus, LoginQueueParseResponse, LoginQueueResponse, OperationLogResponse, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, Task, TaskItemsResponse, TrackedBlogger } from './types';
+import type { Account, AccountWarmupRun, ApiError, BitBrowserImportResponse, BloggerCategory, Dashboard, DashboardHeatmapItems, HealthStatus, LocalBrowserLoginHelperStatus, LoginQueueParseResponse, LoginQueueResponse, OperationLogResponse, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, Task, TaskItemsResponse, TrackedBlogger } from './types';
 
 type OperationLogParams = {
   task_id?: number;
@@ -79,10 +79,21 @@ export const api = {
   },
   tasks: () => request<{ tasks: Task[] }>('/api/tasks'),
   task: (id: number) => request<{ task: Task }>(`/api/tasks/${id}`),
-  bloggers: () => request<{ bloggers: TrackedBlogger[] }>('/api/bloggers'),
-  addBlogger: (payload: { screen_name: string; display_name?: string; default_tweet_limit?: number }) => request<{ blogger: TrackedBlogger }>('/api/bloggers', { method: 'POST', body: JSON.stringify(payload) }),
-  bulkAddBloggers: (payload: { text: string; default_tweet_limit?: number }) => request<{ imported: TrackedBlogger[]; duplicates: Array<{ screen_name: string; reason: string }>; skipped: Array<{ input: string; reason: string }>; total: number }>('/api/bloggers/bulk', { method: 'POST', body: JSON.stringify(payload) }),
-  updateBlogger: (id: number, payload: Partial<Pick<TrackedBlogger, 'screen_name' | 'display_name' | 'default_tweet_limit'>>) => request<{ blogger: TrackedBlogger }>(`/api/bloggers/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  bloggers: (params?: { q?: string; category_id?: number | null }) => {
+    const query = new URLSearchParams();
+    if (params?.q) query.set('q', params.q);
+    if (params?.category_id !== undefined && params.category_id !== null) query.set('category_id', String(params.category_id));
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return request<{ bloggers: TrackedBlogger[] }>(`/api/bloggers${suffix}`);
+  },
+  bloggerCategories: () => request<{ categories: BloggerCategory[] }>('/api/blogger-categories'),
+  addBloggerCategory: (payload: { name: string; color?: string }) => request<{ category: BloggerCategory }>('/api/blogger-categories', { method: 'POST', body: JSON.stringify(payload) }),
+  updateBloggerCategory: (id: number, payload: Partial<Pick<BloggerCategory, 'name' | 'color'>>) => request<{ category: BloggerCategory }>(`/api/blogger-categories/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteBloggerCategory: (id: number) => request<{ ok: boolean }>(`/api/blogger-categories/${id}`, { method: 'DELETE' }),
+  addBlogger: (payload: { screen_name: string; display_name?: string; default_tweet_limit?: number; category_id?: number | null; refresh_profile?: boolean }) => request<{ blogger: TrackedBlogger }>('/api/bloggers', { method: 'POST', body: JSON.stringify(payload) }),
+  bulkAddBloggers: (payload: { text: string; default_tweet_limit?: number; category_id?: number | null; refresh_profile?: boolean }) => request<{ imported: TrackedBlogger[]; duplicates: Array<{ screen_name: string; reason: string }>; skipped: Array<{ input: string; reason: string }>; total: number }>('/api/bloggers/bulk', { method: 'POST', body: JSON.stringify(payload) }),
+  updateBlogger: (id: number, payload: Partial<Pick<TrackedBlogger, 'screen_name' | 'display_name' | 'avatar_url' | 'category_id' | 'default_tweet_limit'>>) => request<{ blogger: TrackedBlogger }>(`/api/bloggers/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  refreshBloggerProfiles: (payload: { ids?: number[]; limit?: number }) => request<{ refreshed: number; failed: number; results: Array<{ id: number; screen_name: string; ok: boolean; avatar_url?: string; error?: string }> }>('/api/bloggers/refresh-profiles', { method: 'POST', body: JSON.stringify(payload) }),
   deleteBlogger: (id: number) => request<{ ok: boolean }>(`/api/bloggers/${id}`, { method: 'DELETE' }),
   taskItems: (id: number, params?: { offset?: number; limit?: number; q?: string; has_media?: string; media_status?: string }) => {
     const query = new URLSearchParams();

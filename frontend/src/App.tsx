@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Edit3, Eye, ExternalLink, FileArchive, FolderKanban, Heart, Image, Info, LogOut, Menu, MessageCircle, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, Repeat2, Search, ShieldCheck, Play, Save, Square, Target, TrendingUp, Video, X, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Edit3, Eye, ExternalLink, FileArchive, FolderKanban, Heart, Image, Info, Layers3, LogOut, Menu, MessageCircle, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, Repeat2, Search, ShieldCheck, Play, Save, Square, Target, TrendingUp, UserRoundCheck, Video, X, Zap } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { SelectMenu } from './components/ui/select-menu';
 import { Textarea } from './components/ui/textarea';
-import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, LocalBrowserLoginHelperStatus, LoginQueueItem, LoginQueueParseResponse, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskResultItem, TaskResultMedia, TaskType, TrackedBlogger } from './lib/types';
+import type { Account, BitBrowserImportResult, BloggerCategory, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, LocalBrowserLoginHelperStatus, LoginQueueItem, LoginQueueParseResponse, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskResultItem, TaskResultMedia, TaskType, TrackedBlogger } from './lib/types';
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
 import { defaultRunTimeRange, presetFromTimeRange, rangeFromPreset, splitTimeRange, timeRangeError, TIME_PRESETS, todayString, type TimePreset } from './lib/timeRange';
@@ -18,6 +18,7 @@ import { TaskLiveView } from './pages/TaskLiveView';
 type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'primary';
 type HeatmapMetric = 'count' | 'media_count' | 'task_count';
 type HeatmapDays = 1 | 7 | 30;
+type ProxyMode = 'auto' | 'pool' | 'manual';
 
 const USABLE_ACCOUNT_STATUSES = new Set(['active', 'unknown', 'check_failed']);
 const LOGIN_QUEUE_TERMINAL_STATUSES = new Set(['completed', 'failed', 'expired', 'cancelled', 'skipped']);
@@ -126,11 +127,18 @@ const NAV_ITEMS = [
   { to: '/tasks', icon: FolderKanban, label: '任务' },
   { to: '/tasks/new', icon: Plus, label: '新建任务' },
   { to: '/schedules', icon: CalendarClock, label: '定时任务' },
+  { to: '/bloggers', icon: UserRoundCheck, label: '博主管理' },
   { to: '/operation-logs', icon: ClipboardList, label: '运维日志' },
   { to: '/result-db', icon: Database, label: '数据库' },
   { to: '/accounts', icon: ShieldCheck, label: '账号' },
   { to: '/proxies', icon: Network, label: '代理' },
 ];
+
+function proxyModeFromValues(proxyId?: number | null, proxy?: string): ProxyMode {
+  if (proxyId) return 'pool';
+  if (String(proxy || '').trim()) return 'manual';
+  return 'auto';
+}
 
 function statusTone(status: string): BadgeTone {
   if (status === 'completed' || status === 'active' || status === 'finished') return 'success';
@@ -1563,6 +1571,7 @@ function TaskFormPage() {
   const [form, setForm] = useState<TaskFormValues>(DEFAULT_TASK_FORM);
   const [timePreset, setTimePreset] = useState<TimePreset>('7d');
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [proxyMode, setProxyMode] = useState<ProxyMode>('auto');
   const [error, setError] = useState('');
   const [bloggerForm, setBloggerForm] = useState({ screen_name: '', default_tweet_limit: 10 });
   const [showBatchLimit, setShowBatchLimit] = useState(false);
@@ -1611,6 +1620,7 @@ function TaskFormPage() {
     const template = getTaskTemplateById(selectedTemplateId);
     if (template) {
       setForm((prev) => ({ ...DEFAULT_TASK_FORM, ...prev, ...template.payload, task_type: template.payload.task_type || prev.task_type }));
+      setProxyMode(proxyModeFromValues(template.payload.proxy_id, template.payload.proxy));
       if (template.payload.time_range) {
         const matchedPreset = TIME_PRESETS.find((item) => rangeFromPreset(item.key) === template.payload.time_range);
         setTimePreset(matchedPreset?.key || 'custom');
@@ -1851,19 +1861,6 @@ function TaskFormPage() {
             <Check label="图片" checked={true} disabled onCheckedChange={() => undefined} />
             <Check label="视频" checked={form.has_video} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_video: checked }))} />
           </div>
-          <Field label="代理池">
-            <SelectMenu
-              value={form.proxy_id ? String(form.proxy_id) : ''}
-              onValueChange={(value) => setForm((prev) => ({ ...prev, proxy_id: value ? Number(value) : null }))}
-              options={[
-                { value: '', label: '自动分配或不使用代理' },
-                ...usableProxies.map((proxy) => ({
-                  value: String(proxy.id),
-                  label: `${proxy.label}${proxy.cooldown_until ? ` · 冷却至 ${proxy.cooldown_until}` : ''}`,
-                })),
-              ]}
-            />
-          </Field>
           <TimeRangePicker
             value={form.time_range}
             preset={timePreset}
@@ -1882,7 +1879,7 @@ function TaskFormPage() {
 
       {showAdvanced && <div className="grid gap-4 xl:grid-cols-2">
         <Card>
-          <CardHeader><h3 className="font-semibold">基础</h3></CardHeader>
+          <CardHeader><h3 className="font-semibold">任务类型</h3></CardHeader>
           <CardContent className="space-y-4">
             <Field label="任务类型">
               <SelectMenu
@@ -1898,6 +1895,12 @@ function TaskFormPage() {
                 ]}
               />
             </Field>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><h3 className="font-semibold">账号与代理</h3></CardHeader>
+          <CardContent className="space-y-4">
             <Field label="X账号">
               <SelectMenu
                 value={String(form.account_id)}
@@ -1911,31 +1914,59 @@ function TaskFormPage() {
                 ]}
               />
             </Field>
-            <Field label="目标用户 / 推文链接">
-              <Textarea value={form.targets} onChange={(e) => setForm((prev) => ({ ...prev, targets: e.target.value, target_limits: {} }))} rows={4} />
+            <Field label="代理模式">
+              <SelectMenu
+                value={proxyMode}
+                onValueChange={(value) => {
+                  const nextMode = value as ProxyMode;
+                  setProxyMode(nextMode);
+                  setForm((prev) => ({
+                    ...prev,
+                    proxy_id: nextMode === 'pool' ? prev.proxy_id : null,
+                    proxy: nextMode === 'manual' ? prev.proxy : '',
+                  }));
+                }}
+                options={[
+                  { value: 'auto', label: '自动分配或不使用代理' },
+                  { value: 'pool', label: '从代理池选择' },
+                  { value: 'manual', label: '手填代理' },
+                ]}
+              />
             </Field>
+            {proxyMode === 'pool' && (
+              <Field label="代理池">
+                <SelectMenu
+                  value={form.proxy_id ? String(form.proxy_id) : ''}
+                  onValueChange={(value) => setForm((prev) => ({ ...prev, proxy_id: value ? Number(value) : null }))}
+                  options={[
+                    { value: '', label: '自动分配可用代理' },
+                    ...usableProxies.map((proxy) => ({
+                      value: String(proxy.id),
+                      label: `${proxy.label}${proxy.cooldown_until ? ` · 冷却至 ${proxy.cooldown_until}` : ''}`,
+                    })),
+                  ]}
+                />
+              </Field>
+            )}
+            {proxyMode === 'manual' && (
+              <Field label="手填代理">
+                <Input value={form.proxy} onChange={(e) => setForm((prev) => ({ ...prev, proxy: e.target.value }))} placeholder={PROXY_PLACEHOLDER} />
+              </Field>
+            )}
           </CardContent>
         </Card>
 
         <Card>
-          <CardHeader><h3 className="font-semibold">对标账号</h3></CardHeader>
+          <CardHeader><h3 className="font-semibold">媒体与输出</h3></CardHeader>
           <CardContent className="space-y-4">
-            <Field label="拉取条数">
-              <Input type="number" min={1} value={form.tweet_limit} onChange={(e) => setForm((prev) => ({ ...prev, tweet_limit: Number(e.target.value) }))} />
-            </Field>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader><h3 className="font-semibold">用户媒体</h3></CardHeader>
-          <CardContent className="space-y-4">
-            <Check label="下载视频" checked={form.has_video} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_video: checked }))} />
-            <Check label="包含转推" checked={form.has_retweet} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_retweet: checked }))} />
-            <Check label="亮点" checked={form.high_lights} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, high_lights: checked }))} />
-            <Check label="Likes" checked={form.likes} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, likes: checked }))} />
-            <Check label="去重日志" checked={form.down_log} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, down_log: checked }))} />
-            <Check label="自动同步" checked={form.auto_sync} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, auto_sync: checked }))} />
-            <Check label="输出 Markdown" checked={form.md_output} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, md_output: checked }))} />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Check label="包含转推" checked={form.has_retweet} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_retweet: checked }))} />
+              <Check label="亮点" checked={form.high_lights} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, high_lights: checked }))} />
+              <Check label="Likes" checked={form.likes} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, likes: checked }))} />
+              <Check label="去重日志" checked={form.down_log} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, down_log: checked }))} />
+              <Check label="自动同步" checked={form.auto_sync} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, auto_sync: checked }))} />
+              <Check label="输出 Markdown" checked={form.md_output} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, md_output: checked }))} />
+            </div>
             <Field label="图片格式">
               <SelectMenu
                 value={form.image_format}
@@ -1950,21 +1981,18 @@ function TaskFormPage() {
             <Field label="单个 Markdown 媒体数量">
               <Input type="number" value={form.media_count_limit} onChange={(e) => setForm((prev) => ({ ...prev, media_count_limit: Number(e.target.value) }))} />
             </Field>
-            <Field label="代理池">
-              <SelectMenu
-                value={form.proxy_id ? String(form.proxy_id) : ''}
-                onValueChange={(value) => setForm((prev) => ({ ...prev, proxy_id: value ? Number(value) : null }))}
-                options={[
-                  { value: '', label: '自动分配或使用手填代理' },
-                  ...usableProxies.map((proxy) => ({
-                    value: String(proxy.id),
-                    label: `${proxy.label}${proxy.cooldown_until ? ` · 冷却至 ${proxy.cooldown_until}` : ''}`,
-                  })),
-                ]}
-              />
-            </Field>
-            <Field label="手填代理">
-              <Input value={form.proxy} onChange={(e) => setForm((prev) => ({ ...prev, proxy: e.target.value }))} placeholder={PROXY_PLACEHOLDER} />
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><h3 className="font-semibold">用户媒体</h3></CardHeader>
+          <CardContent className="space-y-4">
+            <Field label="下载内容">
+              <div className="grid gap-3 sm:grid-cols-3">
+                <Check label="推文文本" checked={true} disabled onCheckedChange={() => undefined} />
+                <Check label="图片" checked={true} disabled onCheckedChange={() => undefined} />
+                <Check label="视频" checked={form.has_video} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_video: checked }))} />
+              </div>
             </Field>
           </CardContent>
         </Card>
@@ -4494,22 +4522,27 @@ function RunControlPage() {
   const [copyStatus, setCopyStatus] = useState('');
   const [form, setForm] = useState<RunConfig>(DEFAULT_RUN_FORM);
   const [timePreset, setTimePreset] = useState<TimePreset>('all');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [proxyMode, setProxyMode] = useState<ProxyMode>('auto');
 
   useEffect(() => {
     if (configData) {
       const template = getTaskTemplateById(selectedTemplateId);
       setForm((prev) => {
         const savedConfig = { ...prev, ...configData };
+        setProxyMode(proxyModeFromValues(savedConfig.proxy_id, savedConfig.proxy));
         if (!template?.runPayload) {
           return savedConfig;
         }
-        return {
+        const nextConfig = {
           ...DEFAULT_RUN_FORM,
           ...savedConfig,
           ...template.runPayload,
           cookie: savedConfig.cookie || '',
           save_path: savedConfig.save_path || '',
         };
+        setProxyMode(proxyModeFromValues(nextConfig.proxy_id, nextConfig.proxy));
+        return nextConfig;
       });
       setTimePreset(presetFromTimeRange(template?.runPayload?.time_range || configData.time_range));
     }
@@ -4519,6 +4552,7 @@ function RunControlPage() {
     const template = getTaskTemplateById(selectedTemplateId);
     if (template?.runPayload) {
       setForm((prev) => ({ ...DEFAULT_RUN_FORM, ...prev, ...template.runPayload, cookie: prev.cookie || '', save_path: prev.save_path || '' }));
+      setProxyMode(proxyModeFromValues(template.runPayload.proxy_id, template.runPayload.proxy));
       setTimePreset(presetFromTimeRange(template.runPayload.time_range || DEFAULT_RUN_FORM.time_range));
     }
   }, [selectedTemplateId]);

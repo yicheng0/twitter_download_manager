@@ -54,13 +54,17 @@ class ScheduleOperationsTest(unittest.TestCase):
         with web_app.db() as conn:
             row = conn.execute("select value from app_meta where key = 'schema_version'").fetchone()
             columns = {item['name'] for item in conn.execute('pragma table_info(scheduled_tasks)').fetchall()}
-        self.assertEqual(int(row['value']), 6)
+        self.assertEqual(int(row['value']), 7)
         self.assertIn('timezone', columns)
         self.assertIn('consecutive_failures', columns)
         with web_app.db() as conn:
             blogger_columns = {item['name'] for item in conn.execute('pragma table_info(tracked_bloggers)').fetchall()}
+            category_columns = {item['name'] for item in conn.execute('pragma table_info(blogger_categories)').fetchall()}
             monitor_columns = {item['name'] for item in conn.execute('pragma table_info(schedule_monitor_states)').fetchall()}
         self.assertIn('screen_name', blogger_columns)
+        self.assertIn('avatar_url', blogger_columns)
+        self.assertIn('category_id', blogger_columns)
+        self.assertIn('name', category_columns)
         self.assertIn('latest_tweet_id', monitor_columns)
 
     def test_bulk_blogger_import_skips_invalid_and_duplicates(self):
