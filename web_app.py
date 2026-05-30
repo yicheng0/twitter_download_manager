@@ -94,7 +94,7 @@ PROXY_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_PROXY_MIN_INTERVAL_SE
 PROXY_FAILURE_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_PROXY_FAILURE_COOLDOWN_SECONDS', str(30 * 60)) or 0))
 PROXY_RATE_LIMIT_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_PROXY_RATE_LIMIT_COOLDOWN_SECONDS', str(2 * 60 * 60)) or 0))
 DEFAULT_MAX_CONCURRENT_REQUESTS = max(1, int(os.environ.get('TW_DEFAULT_MAX_CONCURRENT_REQUESTS', '2') or 2))
-MAX_CONCURRENT_REQUESTS_CAP = max(DEFAULT_MAX_CONCURRENT_REQUESTS, int(os.environ.get('TW_MAX_CONCURRENT_REQUESTS_CAP', '3') or 3))
+MAX_CONCURRENT_REQUESTS_CAP = max(DEFAULT_MAX_CONCURRENT_REQUESTS, int(os.environ.get('TW_MAX_CONCURRENT_REQUESTS_CAP', '16') or 16))
 ACCOUNT_HEALTH_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_HEALTH_MIN_INTERVAL_SECONDS', str(30 * 60)) or 0))
 SERVER_TIMEZONE = os.environ.get('TW_WEB_TIMEZONE', time.tzname[0] if time.tzname else 'local')
 OPERATION_LOG_RETENTION_DAYS = max(1, int(os.environ.get('TW_OPERATION_LOG_RETENTION_DAYS', '90') or 90))
@@ -172,7 +172,7 @@ WORKER_CONCURRENCY = max(1, int(os.environ.get('TW_WORKER_CONCURRENCY', '1') or 
 SQLITE_BUSY_TIMEOUT_MS = max(1000, int(os.environ.get('TW_SQLITE_BUSY_TIMEOUT_MS', '5000') or 5000))
 TASK_LEASE_TIMEOUT_SECONDS = max(60, int(os.environ.get('TW_TASK_LEASE_TIMEOUT_SECONDS', '300') or 300))
 TASK_HEARTBEAT_SECONDS = max(5, int(os.environ.get('TW_TASK_HEARTBEAT_SECONDS', '15') or 15))
-ACCOUNT_API_INTERVAL_SECONDS = float(os.environ.get('TW_ACCOUNT_API_INTERVAL_SECONDS', '15') or 15)
+ACCOUNT_API_INTERVAL_SECONDS = float(os.environ.get('TW_ACCOUNT_API_INTERVAL_SECONDS', '8') or 8)
 PROXY_API_INTERVAL_SECONDS = float(os.environ.get('TW_PROXY_API_INTERVAL_SECONDS', '0.5') or 0.5)
 MEDIA_DOWNLOAD_INTERVAL_SECONDS = float(os.environ.get('TW_MEDIA_DOWNLOAD_INTERVAL_SECONDS', '0') or 0)
 CRAWLER_REQUEST_RETRIES = max(1, int(os.environ.get('TW_CRAWLER_REQUEST_RETRIES', '1') or 1))
@@ -729,7 +729,8 @@ def user_payload(user):
     return {'id': user['id'], 'username': user['username'], 'role': user['role']}
 
 
-def account_payload(account):
+def account_payload(account, capacity=None):
+    capacity = capacity if capacity is not None else account_capacity_payload(account)
     return {
         'id': account['id'],
         'label': account['label'],
@@ -743,6 +744,7 @@ def account_payload(account):
         'last_used_at': account['last_used_at'] if 'last_used_at' in account.keys() else None,
         'cooldown_until': account['cooldown_until'] if 'cooldown_until' in account.keys() else None,
         'tier': account['tier'] if 'tier' in account.keys() else 'new',
+        'capacity': capacity,
         'created_at': account['created_at'],
     }
 
@@ -1242,6 +1244,42 @@ def first_existing(row, *names):
     return ''
 
 
+def resolve_task_output_path(output_dir, value):
+    if not value:
+        return None
+    output_dir = Path(output_dir).resolve()
+    raw_path = Path(str(value))
+    candidates = [raw_path] if raw_path.is_absolute() else [output_dir / raw_path]
+    if not raw_path.is_absolute():
+        for path in output_dir.rglob(raw_path.name):
+            candidates.append(path)
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            continue
+        if resolved.is_file() and (resolved == output_dir or output_dir in resolved.parents):
+            return resolved
+    return None
+
+
+def media_file_response_type(path):
+    suffix = Path(path).suffix.lower()
+    if suffix in {'.jpg', '.jpeg'}:
+        return 'image/jpeg'
+    if suffix == '.png':
+        return 'image/png'
+    if suffix == '.gif':
+        return 'image/gif'
+    if suffix == '.webp':
+        return 'image/webp'
+    if suffix == '.mp4':
+        return 'video/mp4'
+    if suffix == '.mov':
+        return 'video/quicktime'
+    return 'application/octet-stream'
+
+
 def index_task_outputs(task):
     output_dir = Path(task['output_dir'])
     if not output_dir.exists():
@@ -1261,12 +1299,12 @@ def index_task_outputs(task):
                         if not raw_row:
                             continue
                         if headers is None:
-                            if 'Tweet URL' in raw_row or 'Tweet Content' in raw_row:
+                            if {'Tweet URL', 'Tweet Content', 'Reply URL', 'Reply Content', 'Parent Tweet URL'}.intersection(set(raw_row)):
                                 headers = raw_row
                             continue
                         row = {headers[index]: raw_row[index] if index < len(raw_row) else '' for index in range(len(headers))}
-                        tweet_url = first_existing(row, 'Tweet URL')
-                        content = first_existing(row, 'Tweet Content')
+                        tweet_url = first_existing(row, 'Tweet URL', 'Reply URL', 'Parent Tweet URL')
+                        content = first_existing(row, 'Tweet Content', 'Reply Content')
                         if not tweet_url and not content:
                             continue
                         cursor = conn.execute(
@@ -1280,13 +1318,13 @@ def index_task_outputs(task):
                                 task['id'],
                                 str(path.relative_to(output_dir)),
                                 tweet_url,
-                                first_existing(row, 'Tweet Date'),
-                                first_existing(row, 'Display Name'),
-                                first_existing(row, 'User Name'),
+                                first_existing(row, 'Tweet Date', 'Reply Date'),
+                                first_existing(row, 'Display Name', 'Replier Display Name'),
+                                first_existing(row, 'User Name', 'Replier User Name'),
                                 content,
-                                int_from_cell(first_existing(row, 'Favorite Count')),
-                                int_from_cell(first_existing(row, 'Retweet Count')),
-                                int_from_cell(first_existing(row, 'Reply Count')),
+                                int_from_cell(first_existing(row, 'Favorite Count', 'Reply Favorite Count')),
+                                int_from_cell(first_existing(row, 'Retweet Count', 'Reply Retweet Count')),
+                                int_from_cell(first_existing(row, 'Reply Count', 'Reply Reply Count')),
                                 now(),
                             ),
                         )
@@ -1303,10 +1341,8 @@ def index_task_outputs(task):
                         saved_path = first_existing(row, 'Saved Path', 'Saved Filename')
                         media_type = first_existing(row, 'Media Type')
                         if media_url or saved_path:
-                            file_path = Path(saved_path) if saved_path else None
-                            if file_path and not file_path.is_absolute():
-                                file_path = output_dir / saved_path
-                            byte_size = file_path.stat().st_size if file_path and file_path.exists() and file_path.is_file() else 0
+                            file_path = resolve_task_output_path(output_dir, saved_path)
+                            byte_size = file_path.stat().st_size if file_path else 0
                             media_cursor = conn.execute(
                                 '''
                                 insert or ignore into media_assets
@@ -1321,7 +1357,7 @@ def index_task_outputs(task):
                                     media_type,
                                     media_url,
                                     str(file_path) if file_path else saved_path,
-                                    Path(saved_path).name if saved_path else '',
+                                    file_path.name if file_path else (Path(saved_path).name if saved_path else ''),
                                     'downloaded' if byte_size else 'indexed',
                                     byte_size,
                                     now(),
@@ -1357,6 +1393,98 @@ def task_index_rows(task_id):
         items = [dict(row) for row in conn.execute('select * from task_items where task_id = ? order by id', (task_id,)).fetchall()]
         media = [dict(row) for row in conn.execute('select * from media_assets where task_id = ? order by id', (task_id,)).fetchall()]
     return items, media
+
+
+def media_asset_payload(row):
+    payload = {
+        'id': row['id'],
+        'task_id': row['task_id'],
+        'task_item_id': row['task_item_id'],
+        'tweet_url': row['tweet_url'],
+        'media_type': row['media_type'] or '',
+        'media_url': row['media_url'] or '',
+        'file_name': row['file_name'] or '',
+        'status': row['status'],
+        'error': row['error'],
+        'byte_size': row['byte_size'],
+        'created_at': row['created_at'],
+        'local_url': None,
+    }
+    if row['status'] == 'downloaded' and int(row['byte_size'] or 0) > 0:
+        payload['local_url'] = f'/api/tasks/{row["task_id"]}/media/{row["id"]}/file'
+    return payload
+
+
+def task_result_item_payload(row, media_rows):
+    return {
+        'id': row['id'],
+        'task_id': row['task_id'],
+        'source_file': row['source_file'],
+        'tweet_url': row['tweet_url'],
+        'tweet_date': row['tweet_date'],
+        'display_name': row['display_name'],
+        'screen_name': row['screen_name'],
+        'content': row['content'],
+        'favorite_count': row['favorite_count'],
+        'retweet_count': row['retweet_count'],
+        'reply_count': row['reply_count'],
+        'media_count': row['media_count'],
+        'created_at': row['created_at'],
+        'media': [media_asset_payload(media) for media in media_rows],
+    }
+
+
+def task_result_items(task_id, offset=0, limit=50, q='', has_media='', media_status=''):
+    offset = max(0, int(offset or 0))
+    limit = max(1, min(int(limit or 50), 100))
+    q = str(q or '').strip()
+    has_media = str(has_media or '').strip().lower()
+    media_status = str(media_status or '').strip().lower()
+    where = ['task_items.task_id = ?']
+    params = [task_id]
+    joins = ''
+    if q:
+        where.append('(task_items.content like ? or task_items.screen_name like ? or task_items.display_name like ? or task_items.tweet_url like ?)')
+        like = f'%{q}%'
+        params.extend([like, like, like, like])
+    if has_media in {'1', 'true', 'yes'}:
+        where.append('task_items.media_count > 0')
+    elif has_media in {'0', 'false', 'no'}:
+        where.append('task_items.media_count = 0')
+    if media_status:
+        joins = 'join media_assets filter_media on filter_media.task_item_id = task_items.id'
+        where.append('filter_media.status = ?')
+        params.append(media_status)
+    where_sql = ' and '.join(where)
+    with db() as conn:
+        total_row = conn.execute(f'select count(distinct task_items.id) as count from task_items {joins} where {where_sql}', tuple(params)).fetchone()
+        rows = conn.execute(
+            f'''
+            select distinct task_items.*
+            from task_items
+            {joins}
+            where {where_sql}
+            order by datetime(coalesce(task_items.tweet_date, task_items.created_at)) desc, task_items.id desc
+            limit ? offset ?
+            ''',
+            (*params, limit, offset),
+        ).fetchall()
+        item_ids = [row['id'] for row in rows]
+        media_by_item = {item_id: [] for item_id in item_ids}
+        if item_ids:
+            placeholders = ','.join('?' for _ in item_ids)
+            media_rows = conn.execute(
+                f'select * from media_assets where task_item_id in ({placeholders}) order by id',
+                tuple(item_ids),
+            ).fetchall()
+            for media in media_rows:
+                media_by_item.setdefault(media['task_item_id'], []).append(media)
+    return {
+        'total': int(total_row['count'] if total_row else 0),
+        'offset': offset,
+        'limit': limit,
+        'items': [task_result_item_payload(row, media_by_item.get(row['id'], [])) for row in rows],
+    }
 
 
 def sync_task_to_result_db(task):
@@ -2084,6 +2212,116 @@ def account_tasks_last_24h(conn, account_id):
     return int(row['count'] if row else 0)
 
 
+def account_usage_last_24h(conn, account_id):
+    row = conn.execute(
+        '''
+        select
+            count(*) as task_count,
+            coalesce(sum(coalesce(api_calls, 0)), 0) as api_calls,
+            coalesce(sum(coalesce(api_call_budget, 0)), 0) as api_budget,
+            coalesce(sum(case when last_error_type = 'rate_limited' then 1 else 0 end), 0) as rate_limited_count,
+            coalesce(sum(case when last_error_type in ('network_failed', 'partial_failed', 'failed') then 1 else 0 end), 0) as failure_count
+        from tasks
+        where account_id = ?
+          and datetime(created_at) >= datetime('now', 'localtime', '-1 day')
+        ''',
+        (account_id,),
+    ).fetchone()
+    return {
+        'task_count': int(row['task_count'] if row else 0),
+        'api_calls': int(row['api_calls'] if row else 0),
+        'api_budget': int(row['api_budget'] if row else 0),
+        'rate_limited_count': int(row['rate_limited_count'] if row else 0),
+        'failure_count': int(row['failure_count'] if row else 0),
+    }
+
+
+def account_api_budget_24h(account):
+    if 'daily_quota' in account.keys():
+        try:
+            quota = int(account['daily_quota'] or 0)
+            if quota > 0:
+                return quota
+        except (TypeError, ValueError):
+            pass
+    return 80 if account_tier(account) == 'new' else 200
+
+
+def account_capacity_payload(account, conn=None):
+    close_conn = False
+    if conn is None:
+        conn = db()
+        close_conn = True
+    try:
+        usage = account_usage_last_24h(conn, account['id'])
+        task_limit = account_daily_limit(account)
+        api_budget = account_api_budget_24h(account)
+        api_used = usage['api_calls']
+        task_used = usage['task_count']
+        api_remaining = max(api_budget - api_used, 0)
+        task_remaining = max(task_limit - task_used, 0)
+        status = account['status']
+        cooldown_until = row_datetime(account['cooldown_until'] if 'cooldown_until' in account.keys() else None)
+        cooldown_remaining = max(0, int((cooldown_until - datetime.now()).total_seconds())) if cooldown_until else 0
+        min_interval_remaining = max(0, account_min_interval_seconds(account) - seconds_since(account['last_used_at'] if 'last_used_at' in account.keys() else None))
+        next_available_delay = max(cooldown_remaining, min_interval_remaining)
+        next_available_at = seconds_from_now(next_available_delay) if next_available_delay else None
+        failure_count = int(account['failure_count'] if 'failure_count' in account.keys() else 0)
+        success_count = int(account['success_count'] if 'success_count' in account.keys() else 0)
+
+        if status in {ACCOUNT_EXPIRED_STATUS, 'auth_expired', 'expired'}:
+            score = 0
+            level = 'expired'
+            reason = '账号会话失效，需要重新登录'
+        elif cooldown_remaining:
+            score = 10 if usage['rate_limited_count'] else 20
+            level = 'cooldown'
+            reason = '账号正在冷却'
+        else:
+            usage_ratio = api_used / api_budget if api_budget else 0
+            score = 100
+            score -= min(55, int(usage_ratio * 55))
+            score -= min(20, usage['rate_limited_count'] * 20)
+            score -= min(20, usage['failure_count'] * 8)
+            score -= min(15, failure_count * 3)
+            score += min(8, success_count)
+            if min_interval_remaining:
+                score = min(score, 65)
+            if task_remaining <= 0 or api_remaining <= 0:
+                score = min(score, 25)
+            score = max(0, min(100, score))
+            if api_remaining <= 0 or task_remaining <= 0:
+                level = 'limited'
+                reason = '今日估算额度已用完'
+            elif usage['rate_limited_count'] or score < 45:
+                level = 'risky'
+                reason = '近期失败或限流较多'
+            elif min_interval_remaining:
+                level = 'limited'
+                reason = '距离下次任务间隔不足'
+            else:
+                level = 'healthy'
+                reason = '账号状态正常'
+        return {
+            'score': int(score),
+            'level': level,
+            'reason': reason,
+            'api_used_24h': api_used,
+            'api_budget_24h': api_budget,
+            'api_remaining_estimate': api_remaining,
+            'task_used_24h': task_used,
+            'task_limit_24h': task_limit,
+            'task_remaining_24h': task_remaining,
+            'cooldown_remaining_seconds': cooldown_remaining,
+            'next_available_at': next_available_at,
+            'rate_limited_24h': usage['rate_limited_count'],
+            'failure_24h': usage['failure_count'],
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
 def seconds_since(value):
     dt = row_datetime(value)
     if not dt:
@@ -2110,11 +2348,12 @@ def proxy_available_for_task(proxy):
 
 
 def account_selection_score(conn, account):
+    capacity = account_capacity_payload(account, conn)
     recent_tasks = account_tasks_last_24h(conn, account['id'])
     failures = int(account['failure_count'] if 'failure_count' in account.keys() else 0)
     successes = int(account['success_count'] if 'success_count' in account.keys() else 0)
     age_bonus = 0 if account_tier(account) == 'new' else -5
-    return recent_tasks * 10 + failures * 4 - successes + age_bonus
+    return -capacity['score'] + recent_tasks * 10 + failures * 4 - successes + age_bonus
 
 
 def proxy_selection_score(proxy):
@@ -2225,6 +2464,20 @@ def select_proxy_for_task(preferred_proxy_id=0, manual_proxy=''):
 
 def reserve_resources_for_task_in_conn(conn, account_id, proxy_id=None, reserved_at=None):
     reserved_at = reserved_at or now()
+
+    # 检查账号是否有 UA，如果没有则初始化
+    account = conn.execute('SELECT user_agent, accept_language FROM accounts WHERE id = ?', (account_id,)).fetchone()
+    if account and not account['user_agent']:
+        try:
+            from user_agent_pool import get_random_ua
+            ua_data = get_random_ua()
+            conn.execute(
+                'UPDATE accounts SET user_agent = ?, accept_language = ? WHERE id = ?',
+                (ua_data['user_agent'], ua_data['accept_language'], account_id)
+            )
+        except Exception as e:
+            print(f'[警告] 初始化账号 UA 失败: {e}')
+
     conn.execute(
         '''
         update accounts
@@ -4661,6 +4914,78 @@ def api_task_detail(task_id: int, user=Depends(require_api_user)):
     return {'task': task_payload(task, include_config=True, include_log=True, include_files=True, include_preview=True)}
 
 
+@app.get('/api/tasks/{task_id}/items')
+def api_task_items(
+    task_id: int,
+    offset: int = 0,
+    limit: int = 50,
+    q: str = '',
+    has_media: str = '',
+    media_status: str = '',
+    user=Depends(require_api_user),
+):
+    get_task_or_404(task_id, user)
+    return task_result_items(task_id, offset=offset, limit=limit, q=q, has_media=has_media, media_status=media_status)
+
+
+@app.get('/api/tasks/{task_id}/items/stream')
+def api_task_items_stream(
+    task_id: int,
+    offset: int = 0,
+    limit: int = 50,
+    user=Depends(require_api_user)
+):
+    """实时数据流端点 - 用于实时展示采集数据"""
+    get_task_or_404(task_id, user)
+
+    limit = max(1, min(int(limit or 50), 200))
+    offset = max(0, int(offset or 0))
+
+    with db() as conn:
+        # 获取总数
+        total_row = conn.execute(
+            'SELECT COUNT(*) as count FROM task_items_realtime WHERE task_id = ?',
+            (task_id,)
+        ).fetchone()
+        total = total_row['count'] if total_row else 0
+
+        # 获取数据
+        rows = conn.execute('''
+            SELECT * FROM task_items_realtime
+            WHERE task_id = ?
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+        ''', (task_id, limit, offset)).fetchall()
+
+        items = [dict(row) for row in rows]
+
+    return {
+        'total': total,
+        'items': items,
+        'has_more': offset + len(items) < total
+    }
+
+
+@app.get('/api/tasks/{task_id}/media/{asset_id}/file')
+def api_task_media_file(task_id: int, asset_id: int, user=Depends(require_api_user)):
+    task = get_task_or_404(task_id, user)
+    with db() as conn:
+        asset = conn.execute(
+            'select * from media_assets where id = ? and task_id = ?',
+            (asset_id, task_id),
+        ).fetchone()
+    if not asset or asset['status'] != 'downloaded' or not asset['file_path']:
+        raise HTTPException(status_code=404, detail='Media file not found')
+    output_dir = Path(task['output_dir']).resolve()
+    try:
+        file_path = Path(asset['file_path']).resolve()
+    except Exception:
+        raise HTTPException(status_code=404, detail='Media file not found')
+    if output_dir not in file_path.parents or not file_path.is_file():
+        raise HTTPException(status_code=404, detail='Media file not found')
+    return FileResponse(file_path, media_type=media_file_response_type(file_path), filename=file_path.name)
+
+
 @app.get('/api/tasks/{task_id}/files')
 def api_task_files(task_id: int, user=Depends(require_api_user)):
     task = get_task_or_404(task_id, user)
@@ -4698,7 +5023,8 @@ def api_delete_task(task_id: int, user=Depends(require_api_user)):
 def api_accounts(user=Depends(require_api_admin)):
     with db() as conn:
         rows = conn.execute('select * from accounts order by id desc').fetchall()
-    return {'accounts': [account_payload(row) for row in rows]}
+        accounts = [account_payload(row, account_capacity_payload(row, conn)) for row in rows]
+    return {'accounts': accounts}
 
 
 @app.get('/api/proxies')

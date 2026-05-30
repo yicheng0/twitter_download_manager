@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Eye, FileArchive, FolderKanban, Info, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, ShieldCheck, Play, Square, Target, TrendingUp, X, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Eye, ExternalLink, FileArchive, FolderKanban, Image, Info, Link2, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, Search, ShieldCheck, Play, Square, Target, TrendingUp, Video, X, Zap } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
@@ -8,7 +8,7 @@ import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader } from './components/ui/card';
 import { Input } from './components/ui/input';
 import { Textarea } from './components/ui/textarea';
-import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskType } from './lib/types';
+import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskResultItem, TaskResultMedia, TaskType } from './lib/types';
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
 import { defaultRunTimeRange, defaultTaskTimeRange, presetFromTimeRange, rangeFromPreset, splitTimeRange, timeRangeError, TIME_PRESETS, todayString, type TimePreset } from './lib/timeRange';
@@ -195,6 +195,13 @@ function levelTone(level: string): BadgeTone {
   if (level === 'error') return 'danger';
   if (level === 'warning') return 'warning';
   return 'primary';
+}
+
+function accountCapacityTone(level?: string): BadgeTone {
+  if (level === 'healthy') return 'success';
+  if (level === 'limited' || level === 'cooldown') return 'warning';
+  if (level === 'expired' || level === 'risky') return 'danger';
+  return 'neutral';
 }
 
 function levelLabel(level: string) {
@@ -1397,7 +1404,7 @@ function TaskFormPage() {
                 <option value={0}>自动分配可用账号</option>
                 {(usableAccounts || []).map((account: Account) => (
                   <option key={account.id} value={account.id}>
-                    {account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.status !== 'active' ? ` · ${statusLabel(account.status)}` : ''}{account.cooldown_until ? ` · 冷却至 ${account.cooldown_until}` : ''}
+                    {account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.capacity ? ` · ${account.capacity.score}分 · API余${account.capacity.api_remaining_estimate}` : ''}{account.status !== 'active' ? ` · ${statusLabel(account.status)}` : ''}{account.cooldown_until ? ` · 冷却至 ${account.cooldown_until}` : ''}
                   </option>
                 ))}
               </select>
@@ -1457,7 +1464,7 @@ function TaskFormPage() {
                 <option value={0}>自动分配可用账号</option>
                 {(usableAccounts || []).map((account: Account) => (
                   <option key={account.id} value={account.id}>
-                    {account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.status !== 'active' ? ` · ${statusLabel(account.status)}` : ''}{account.cooldown_until ? ` · 冷却至 ${account.cooldown_until}` : ''}
+                    {account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.capacity ? ` · ${account.capacity.score}分 · API余${account.capacity.api_remaining_estimate}` : ''}{account.status !== 'active' ? ` · ${statusLabel(account.status)}` : ''}{account.cooldown_until ? ` · 冷却至 ${account.cooldown_until}` : ''}
                   </option>
                 ))}
               </select>
@@ -1627,7 +1634,17 @@ function TimeRangePicker({
 function TaskDetailPage({ id }: { id: number }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [resultOffset, setResultOffset] = useState(0);
+  const [resultQuery, setResultQuery] = useState('');
+  const [resultSearch, setResultSearch] = useState('');
+  const [mediaFilter, setMediaFilter] = useState('');
+  const resultLimit = 50;
   const { data, isLoading } = useQuery({ queryKey: ['task', id], queryFn: () => api.task(id), refetchInterval: 4000 });
+  const { data: resultData, isLoading: resultsLoading, refetch: refetchResults } = useQuery({
+    queryKey: ['task-items', id, resultOffset, resultSearch, mediaFilter],
+    queryFn: () => api.taskItems(id, { offset: resultOffset, limit: resultLimit, q: resultSearch, has_media: mediaFilter }),
+    refetchInterval: 4000,
+  });
   const { data: logData } = useQuery({ queryKey: ['operation-logs', 'task', id], queryFn: () => api.operationLogs({ task_id: id, limit: 80 }), refetchInterval: 4000 });
   const task = data?.task;
   const operationLogs = logData?.logs || [];
@@ -1747,7 +1764,30 @@ function TaskDetailPage({ id }: { id: number }) {
         </Card>
       </div>
 
-      <TaskPreviewPanel preview={task.preview} />
+      <TaskResultsPanel
+        task={task}
+        data={resultData}
+        isLoading={resultsLoading}
+        offset={resultOffset}
+        limit={resultLimit}
+        query={resultQuery}
+        mediaFilter={mediaFilter}
+        onQueryChange={setResultQuery}
+        onSearch={() => {
+          setResultOffset(0);
+          setResultSearch(resultQuery.trim());
+        }}
+        onMediaFilterChange={(value) => {
+          setResultOffset(0);
+          setMediaFilter(value);
+        }}
+        onPageChange={setResultOffset}
+        onRefresh={() => {
+          queryClient.invalidateQueries({ queryKey: ['task', id] });
+          refetchResults();
+        }}
+        fallbackPreview={task.preview}
+      />
 
       <div>
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
@@ -1864,9 +1904,187 @@ function PreviewCell({ column, row }: { column: (typeof PREVIEW_COLUMNS)[number]
   return <span className="whitespace-nowrap">{value}</span>;
 }
 
-function TaskPreviewPanel({ preview }: { preview?: TaskPreview }) {
+function TaskPreviewTable({ preview }: { preview?: TaskPreview }) {
   const rows = preview?.rows || [];
-  const hiddenCount = Math.max((preview?.total || 0) - rows.length, 0);
+
+  return (
+    <div className="overflow-auto border-t border-[hsl(var(--line))]">
+      <table className="w-full min-w-[1080px] border-collapse text-sm">
+        <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
+          <tr>
+            {PREVIEW_COLUMNS.map((column) => (
+              <th key={column.label} className="px-4 py-3">{column.label}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={index} className="border-t border-[hsl(var(--line))] align-top hover:bg-[rgba(14,165,233,0.06)]">
+              {PREVIEW_COLUMNS.map((column) => (
+                <td key={column.label} className="px-4 py-3">
+                  <PreviewCell column={column} row={row} />
+                </td>
+              ))}
+            </tr>
+          ))}
+          {!rows.length && (
+            <tr>
+              <td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={PREVIEW_COLUMNS.length}>
+                暂无采集内容
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function mediaStatusTone(status: string): BadgeTone {
+  if (status === 'downloaded') return 'success';
+  if (status === 'indexed') return 'warning';
+  return 'neutral';
+}
+
+function mediaStatusLabel(status: string) {
+  if (status === 'downloaded') return '已下载';
+  if (status === 'indexed') return '仅索引';
+  return status || '未知';
+}
+
+function mediaIsVideo(media: TaskResultMedia) {
+  const text = `${media.media_type} ${media.file_name} ${media.media_url}`.toLowerCase();
+  return text.includes('video') || text.includes('.mp4') || text.includes('.mov');
+}
+
+function mediaIsImage(media: TaskResultMedia) {
+  const text = `${media.media_type} ${media.file_name} ${media.media_url}`.toLowerCase();
+  return text.includes('image') || /\.(jpe?g|png|gif|webp)(\?|$)/.test(text);
+}
+
+function ResultLink({ href, children }: { href?: string | null; children: React.ReactNode }) {
+  if (!href) return <span className="text-[hsl(var(--muted))]">-</span>;
+  return (
+    <a href={href} target="_blank" rel="noreferrer" className="inline-flex min-w-0 items-center gap-1 text-[hsl(var(--primary-dark))] hover:text-[hsl(var(--text))]">
+      <span className="truncate">{children}</span>
+      <ExternalLink className="h-3.5 w-3.5 shrink-0" />
+    </a>
+  );
+}
+
+function TaskMediaPreview({ media }: { media: TaskResultMedia }) {
+  const canPreview = media.status === 'downloaded' && media.local_url;
+  return (
+    <div className="overflow-hidden rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))]">
+      <div className="flex items-center justify-between gap-2 border-b border-[hsl(var(--line))] px-3 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          {mediaIsVideo(media) ? <Video className="h-4 w-4 shrink-0 text-[hsl(var(--primary-dark))]" /> : <Image className="h-4 w-4 shrink-0 text-[hsl(var(--primary-dark))]" />}
+          <span className="truncate text-sm font-semibold">{media.file_name || media.media_type || '媒体'}</span>
+        </div>
+        <Badge tone={mediaStatusTone(media.status)}>{mediaStatusLabel(media.status)}</Badge>
+      </div>
+      {canPreview && mediaIsImage(media) && (
+        <img src={media.local_url || ''} alt={media.file_name || '采集图片'} loading="lazy" className="aspect-video w-full object-contain bg-black/30" />
+      )}
+      {canPreview && mediaIsVideo(media) && (
+        <video src={media.local_url || ''} controls preload="metadata" className="aspect-video w-full bg-black/40" />
+      )}
+      {!canPreview && (
+        <div className="flex aspect-video items-center justify-center px-3 text-sm text-[hsl(var(--muted))]">
+          仅有源链接，暂无本地预览
+        </div>
+      )}
+      <div className="space-y-2 px-3 py-3 text-xs">
+        <div className="truncate text-[hsl(var(--muted))]">{formatBytes(media.byte_size || 0)}</div>
+        <ResultLink href={media.media_url}>媒体源链接</ResultLink>
+      </div>
+    </div>
+  );
+}
+
+function TaskResultRow({ item, expanded, onToggle }: { item: TaskResultItem; expanded: boolean; onToggle: () => void }) {
+  const mediaLabel = item.media.length ? `${item.media.length} 个媒体` : '无媒体';
+  return (
+    <div className="border-t border-[hsl(var(--line))]">
+      <div className="grid gap-3 px-4 py-4 hover:bg-[rgba(14,165,233,0.06)] md:grid-cols-[minmax(0,1fr)_180px_140px]">
+        <div className="min-w-0 space-y-2">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Badge tone={item.media.length ? 'primary' : 'neutral'}>{mediaLabel}</Badge>
+            <span className="text-xs text-[hsl(var(--muted))]">{item.tweet_date || item.created_at}</span>
+            {item.source_file && <span className="truncate text-xs text-[hsl(var(--muted))]">{item.source_file}</span>}
+          </div>
+          <div className="line-clamp-2 break-words text-sm leading-6 text-[hsl(var(--text))]">{item.content || '无正文内容'}</div>
+          <div className="truncate text-xs text-[hsl(var(--muted))]">{item.display_name || '-'} {item.screen_name || ''}</div>
+        </div>
+        <div className="flex items-center gap-3 text-sm text-[hsl(var(--muted))] md:justify-end">
+          <span>{item.favorite_count || 0} 赞</span>
+          <span>{item.retweet_count || 0} 转</span>
+          <span>{item.reply_count || 0} 评</span>
+        </div>
+        <div className="flex items-center justify-between gap-2 md:justify-end">
+          <ResultLink href={item.tweet_url}>原文</ResultLink>
+          <button type="button" onClick={onToggle} className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[hsl(var(--line))] text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-soft))]" aria-label={expanded ? '收起采集内容' : '展开采集内容'}>
+            {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          </button>
+        </div>
+      </div>
+      {expanded && (
+        <div className="space-y-4 border-t border-[hsl(var(--line))] bg-[rgba(15,23,42,0.38)] px-4 py-4">
+          <div className="whitespace-pre-wrap break-words text-sm leading-7">{item.content || '无正文内容'}</div>
+          <div className="flex flex-wrap gap-2 text-xs text-[hsl(var(--muted))]">
+            <span>作者：{item.display_name || '-'}</span>
+            <span>用户名：{item.screen_name || '-'}</span>
+            <span>互动：{item.favorite_count || 0}/{item.retweet_count || 0}/{item.reply_count || 0}</span>
+          </div>
+          {item.media.length > 0 ? (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {item.media.map((media) => <TaskMediaPreview key={media.id} media={media} />)}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-3 text-sm text-[hsl(var(--muted))]">这条记录没有媒体。</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TaskResultsPanel({
+  task,
+  data,
+  isLoading,
+  offset,
+  limit,
+  query,
+  mediaFilter,
+  onQueryChange,
+  onSearch,
+  onMediaFilterChange,
+  onPageChange,
+  onRefresh,
+  fallbackPreview,
+}: {
+  task: Task;
+  data?: { total: number; offset: number; limit: number; items: TaskResultItem[] };
+  isLoading: boolean;
+  offset: number;
+  limit: number;
+  query: string;
+  mediaFilter: string;
+  onQueryChange: (value: string) => void;
+  onSearch: () => void;
+  onMediaFilterChange: (value: string) => void;
+  onPageChange: (value: number) => void;
+  onRefresh: () => void;
+  fallbackPreview?: TaskPreview;
+}) {
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const items = data?.items || [];
+  const total = data?.total || 0;
+  const canPrev = offset > 0;
+  const canNext = offset + limit < total;
+  const showFallback = !items.length && (fallbackPreview?.rows?.length || 0) > 0;
+  const running = task.status === 'queued' || task.status === 'running';
 
   return (
     <Card>
@@ -1876,41 +2094,53 @@ function TaskPreviewPanel({ preview }: { preview?: TaskPreview }) {
             <Eye className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
             <h3 className="font-semibold">采集内容</h3>
           </div>
-          <div className="text-xs text-[hsl(var(--muted))]">
-            共 {preview?.total || 0} 条，预览最新 {rows.length} 条
-            {hiddenCount > 0 ? `，另有 ${hiddenCount} 条请打包下载查看` : ''}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[hsl(var(--muted))]" />
+              <Input
+                value={query}
+                onChange={(event) => onQueryChange(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') onSearch();
+                }}
+                className="h-9 w-[220px] pl-9"
+                placeholder="搜索正文/作者/链接"
+              />
+            </div>
+            <select className="h-9 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3 text-sm text-[hsl(var(--text))]" value={mediaFilter} onChange={(event) => onMediaFilterChange(event.target.value)}>
+              <option value="">全部记录</option>
+              <option value="true">有媒体</option>
+              <option value="false">无媒体</option>
+            </select>
+            <Button variant="secondary" size="sm" onClick={onSearch}>搜索</Button>
+            <Button variant="secondary" size="sm" onClick={onRefresh}><RefreshCcw className="h-4 w-4" />刷新</Button>
           </div>
+        </div>
+        <div className="mt-2 text-xs text-[hsl(var(--muted))]">
+          共 {total} 条，当前显示 {items.length} 条
+          {running && '；任务运行中时会先显示已索引结果，完成后自动补全'}
         </div>
       </CardHeader>
       <CardContent className="p-0">
-        <div className="overflow-auto">
-          <table className="w-full min-w-[1080px] border-collapse text-sm">
-            <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
-              <tr>
-                {PREVIEW_COLUMNS.map((column) => (
-                  <th key={column.label} className="px-4 py-3">{column.label}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, index) => (
-                <tr key={index} className="border-t border-[hsl(var(--line))] align-top hover:bg-[rgba(14,165,233,0.06)]">
-                  {PREVIEW_COLUMNS.map((column) => (
-                    <td key={column.label} className="px-4 py-3">
-                      <PreviewCell column={column} row={row} />
-                    </td>
-                  ))}
-                </tr>
-              ))}
-              {!rows.length && (
-                <tr>
-                  <td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={PREVIEW_COLUMNS.length}>
-                    暂无采集内容
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+        {isLoading && !items.length && <div className="px-4 py-10 text-center text-sm text-[hsl(var(--muted))]">正在加载采集内容...</div>}
+        {!isLoading && items.map((item) => (
+          <TaskResultRow key={item.id} item={item} expanded={expandedId === item.id} onToggle={() => setExpandedId(expandedId === item.id ? null : item.id)} />
+        ))}
+        {!isLoading && !items.length && showFallback && (
+          <div>
+            <div className="px-4 py-3 text-sm text-[hsl(var(--muted))]">结构化索引暂未生成，先显示 CSV 预览。</div>
+            <TaskPreviewTable preview={fallbackPreview} />
+          </div>
+        )}
+        {!isLoading && !items.length && !showFallback && (
+          <div className="px-4 py-10 text-center text-sm text-[hsl(var(--muted))]">暂无采集内容</div>
+        )}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[hsl(var(--line))] px-4 py-3">
+          <div className="text-xs text-[hsl(var(--muted))]">{total ? `${offset + 1}-${Math.min(offset + limit, total)} / ${total}` : '0 / 0'}</div>
+          <div className="flex gap-2">
+            <Button variant="secondary" size="sm" disabled={!canPrev} onClick={() => onPageChange(Math.max(0, offset - limit))}>上一页</Button>
+            <Button variant="secondary" size="sm" disabled={!canNext} onClick={() => onPageChange(offset + limit)}>下一页</Button>
+          </div>
         </div>
       </CardContent>
     </Card>
@@ -2039,7 +2269,7 @@ function SchedulesPage() {
             <Field label="X账号">
               <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.account_id} onChange={(e) => setForm((prev) => ({ ...prev, account_id: Number(e.target.value) }))}>
                 <option value={0}>自动分配可用账号</option>
-                {usableAccounts.map((account) => <option key={account.id} value={account.id}>{account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}</option>)}
+                {usableAccounts.map((account) => <option key={account.id} value={account.id}>{account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.capacity ? ` · ${account.capacity.score}分 · API余${account.capacity.api_remaining_estimate}` : ''}</option>)}
               </select>
             </Field>
             <Field label="采集类型">
@@ -2339,6 +2569,11 @@ function AccountsPage() {
   const queryClient = useQueryClient();
   const { data } = useQuery({ queryKey: ['accounts'], queryFn: () => api.accounts(), refetchInterval: 8000 });
   const accounts = data?.accounts || [];
+  const capacityAccounts = accounts.filter((account) => account.capacity);
+  const averageCapacity = capacityAccounts.length
+    ? Math.round(capacityAccounts.reduce((sum, account) => sum + (account.capacity?.score || 0), 0) / capacityAccounts.length)
+    : 0;
+  const lowCapacityCount = accounts.filter((account) => (account.capacity?.score ?? 100) < 50).length;
   const [form, setForm] = useState({ label: '', auth_token: '', ct0: '' });
   const [bitBrowserForm, setBitBrowserForm] = useState({ base_url: 'http://127.0.0.1:54345', browser_ids: '' });
   const [bitBrowserResults, setBitBrowserResults] = useState<BitBrowserImportResult[]>([]);
@@ -2540,8 +2775,14 @@ function AccountsPage() {
       )}
       <div className="grid gap-3 md:grid-cols-3">
         <InfoCard title="可用账号" value={String(accounts.filter((account) => USABLE_ACCOUNT_STATUSES.has(account.status)).length)} />
+        <InfoCard title="平均可用分" value={capacityAccounts.length ? String(averageCapacity) : '-'} />
+        <InfoCard title="低分账号" value={String(lowCapacityCount)} />
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-3">
         <InfoCard title="待确认账号" value={String(accounts.filter((account) => account.status === 'unknown' || account.status === 'check_failed').length)} />
         <InfoCard title="最近检测" value={accounts[0]?.last_checked_at || '-'} />
+        <InfoCard title="估算剩余 API" value={String(accounts.reduce((sum, account) => sum + (account.capacity?.api_remaining_estimate || 0), 0))} />
       </div>
 
       <Card>
@@ -2624,13 +2865,14 @@ function AccountsPage() {
       <Card>
         <CardContent className="p-0">
           <div className="overflow-auto">
-            <table className="w-full min-w-[1320px] border-collapse text-sm">
+            <table className="w-full min-w-[1500px] border-collapse text-sm">
               <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
                 <tr>
                   <th className="px-4 py-3">ID</th>
                   <th className="px-4 py-3">名称</th>
                   <th className="px-4 py-3">用户名</th>
                   <th className="px-4 py-3">状态</th>
+                  <th className="px-4 py-3">可用分</th>
                   <th className="px-4 py-3">治理</th>
                   <th className="px-4 py-3">检测时间</th>
                   <th className="px-4 py-3">失败原因</th>
@@ -2648,6 +2890,29 @@ function AccountsPage() {
                         <Badge tone={statusTone(account.status)}>{statusLabel(account.status)}</Badge>
                         <div className="max-w-[220px] text-xs text-[hsl(var(--muted))]">{statusDescription(account.status) || '账号状态'}</div>
                       </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      {account.capacity ? (
+                        <div className="min-w-[180px] space-y-2">
+                          <div className="flex items-center gap-2">
+                            <Badge tone={accountCapacityTone(account.capacity.level)}>{account.capacity.score} 分</Badge>
+                            <span className="text-xs text-[hsl(var(--muted))]">{account.capacity.reason}</span>
+                          </div>
+                          <div className="h-1.5 overflow-hidden rounded-full bg-[hsl(var(--panel-soft))]">
+                            <div
+                              className={cn(
+                                'h-full rounded-full',
+                                account.capacity.score >= 70 ? 'bg-[hsl(var(--success))]' : account.capacity.score >= 40 ? 'bg-[hsl(var(--warning))]' : 'bg-[hsl(var(--danger))]',
+                              )}
+                              style={{ width: `${Math.max(0, Math.min(account.capacity.score, 100))}%` }}
+                            />
+                          </div>
+                          <div className="text-xs text-[hsl(var(--muted))]">
+                            API {account.capacity.api_remaining_estimate}/{account.capacity.api_budget_24h} · 任务 {account.capacity.task_remaining_24h}/{account.capacity.task_limit_24h}
+                          </div>
+                          <div className="text-xs text-[hsl(var(--muted))]">下次可用：{account.capacity.next_available_at || '现在'}</div>
+                        </div>
+                      ) : '-'}
                     </td>
                     <td className="px-4 py-3">
                       <div className="space-y-1 text-xs text-[hsl(var(--muted))]">
@@ -2672,7 +2937,7 @@ function AccountsPage() {
                   </tr>
                 ))}
                 {!accounts.length && (
-                  <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={8}>还没有账号</td></tr>
+                  <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={9}>还没有账号</td></tr>
                 )}
               </tbody>
             </table>

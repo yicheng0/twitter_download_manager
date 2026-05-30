@@ -4,6 +4,22 @@ export type User = {
   role: 'admin' | 'user';
 };
 
+export type AccountCapacity = {
+  score: number;
+  level: 'healthy' | 'limited' | 'cooldown' | 'expired' | 'risky';
+  reason: string;
+  api_used_24h: number;
+  api_budget_24h: number;
+  api_remaining_estimate: number;
+  task_used_24h: number;
+  task_limit_24h: number;
+  task_remaining_24h: number;
+  cooldown_remaining_seconds: number;
+  next_available_at: string | null;
+  rate_limited_24h: number;
+  failure_24h: number;
+};
+
 export type Account = {
   id: number;
   label: string;
@@ -17,6 +33,7 @@ export type Account = {
   last_used_at: string | null;
   cooldown_until: string | null;
   tier: string;
+  capacity?: AccountCapacity;
   created_at: string;
 };
 
@@ -143,6 +160,45 @@ export type TaskPreview = {
   rows: Array<Record<string, string>>;
   total: number;
   csv_files: number;
+};
+
+export type TaskResultMedia = {
+  id: number;
+  task_id: number;
+  task_item_id: number | null;
+  tweet_url: string;
+  media_type: string;
+  media_url: string;
+  file_name: string;
+  status: 'downloaded' | 'indexed' | string;
+  error: string | null;
+  byte_size: number;
+  created_at: string;
+  local_url: string | null;
+};
+
+export type TaskResultItem = {
+  id: number;
+  task_id: number;
+  source_file: string | null;
+  tweet_url: string;
+  tweet_date: string | null;
+  display_name: string | null;
+  screen_name: string | null;
+  content: string | null;
+  favorite_count: number;
+  retweet_count: number;
+  reply_count: number;
+  media_count: number;
+  created_at: string;
+  media: TaskResultMedia[];
+};
+
+export type TaskItemsResponse = {
+  total: number;
+  offset: number;
+  limit: number;
+  items: TaskResultItem[];
 };
 
 export type TaskSummary = {

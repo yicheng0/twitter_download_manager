@@ -1,4 +1,4 @@
-import type { Account, ApiError, BitBrowserImportResponse, Dashboard, DashboardHeatmapItems, HealthStatus, OperationLogResponse, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, Task } from './types';
+import type { Account, ApiError, BitBrowserImportResponse, Dashboard, DashboardHeatmapItems, HealthStatus, OperationLogResponse, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, Task, TaskItemsResponse } from './types';
 
 export type LocalBrowserLoginResponse = {
   status: string;
@@ -51,6 +51,40 @@ export const api = {
   },
   tasks: () => request<{ tasks: Task[] }>('/api/tasks'),
   task: (id: number) => request<{ task: Task }>(`/api/tasks/${id}`),
+  taskItems: (id: number, params?: { offset?: number; limit?: number; q?: string; has_media?: string; media_status?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.offset) query.set('offset', String(params.offset));
+    if (params?.limit) query.set('limit', String(params.limit));
+    if (params?.q) query.set('q', params.q);
+    if (params?.has_media) query.set('has_media', params.has_media);
+    if (params?.media_status) query.set('media_status', params.media_status);
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return request<TaskItemsResponse>(`/api/tasks/${id}/items${suffix}`);
+  },
+  taskItemsStream: (id: number, params?: { offset?: number; limit?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.offset) query.set('offset', String(params.offset));
+    if (params?.limit) query.set('limit', String(params.limit));
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return request<{
+      total: number;
+      items: Array<{
+        id: number;
+        tweet_date: string;
+        display_name: string;
+        user_name: string;
+        tweet_url: string;
+        media_type: string;
+        media_url: string;
+        saved_filename: string;
+        tweet_content: string;
+        favorite_count: number;
+        retweet_count: number;
+        reply_count: number;
+      }>;
+      has_more: boolean;
+    }>(`/api/tasks/${id}/items/stream${suffix}`);
+  },
   createTask: (payload: Record<string, unknown>) => request<{ task: Task }>('/api/tasks', { method: 'POST', body: JSON.stringify(payload) }),
   cancelTask: (id: number) => request<{ task: Task }>(`/api/tasks/${id}/cancel`, { method: 'POST' }),
   deleteTask: (id: number) => request<{ ok: boolean }>(`/api/tasks/${id}`, { method: 'DELETE' }),
