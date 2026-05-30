@@ -447,9 +447,9 @@ function BrandMark({ collapsed }: { collapsed: boolean }) {
         <img src="/logo.svg" alt="X 采集工作台" className="h-9 w-9" />
       </div>
       {!collapsed && (
-        <div className="min-w-0">
-          <div className="text-xs font-semibold uppercase tracking-wide text-[hsl(var(--primary-dark))]">采样工作台</div>
-          <div className="truncate text-lg font-semibold leading-tight">X 采集工作台</div>
+        <div className="min-w-0 leading-tight">
+          <div className="text-[11px] font-medium text-[hsl(var(--primary-dark))] opacity-80">采集控制台</div>
+          <div className="truncate text-base font-semibold leading-tight">X 采集工作台</div>
         </div>
       )}
     </div>
@@ -460,8 +460,8 @@ function SidebarContent({ collapsed, userName, logoutPending, onToggleCollapse, 
   return (
     <>
       <div className={cn(
-        'flex min-h-16 items-center border-b border-[hsl(var(--line))] px-4',
-        collapsed ? 'justify-center' : 'justify-between gap-3',
+        'flex items-center border-b border-[hsl(var(--line))]',
+        collapsed ? 'min-h-[96px] flex-col justify-center gap-2 px-0 py-3' : 'min-h-16 justify-between gap-3 px-4',
       )}>
         <BrandMark collapsed={collapsed} />
         <Button
