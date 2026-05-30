@@ -259,6 +259,7 @@ export type LocalBrowserLoginHelperStatus = {
   helper_url?: string;
   helper_healthy?: boolean;
   failure_reason?: string;
+  retry_after_ms?: number;
 };
 
 export type LoginQueueParseItem = {

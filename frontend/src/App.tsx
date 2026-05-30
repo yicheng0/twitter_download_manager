@@ -7,6 +7,7 @@ import { Badge } from './components/ui/badge';
 import { Button } from './components/ui/button';
 import { Card, CardContent, CardHeader } from './components/ui/card';
 import { Input } from './components/ui/input';
+import { SelectMenu } from './components/ui/select-menu';
 import { Textarea } from './components/ui/textarea';
 import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatmapCell, DashboardHeatmapItem, DashboardTask, LocalBrowserLoginHelperStatus, LoginQueueItem, LoginQueueParseResponse, OperationLog, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, ScheduleFormValues, Task, TaskFormValues, TaskPreview, TaskResultItem, TaskResultMedia, TaskType, TrackedBlogger } from './lib/types';
 import { cn } from './lib/utils';
@@ -281,8 +282,17 @@ function helperCanAutoStartOnBackend(helper: LocalBrowserLoginHelperStatus) {
   return helper.auto_start_supported !== false && helper.status !== 'unsupported';
 }
 
+function helperIsLocalBackendFailure(message: string) {
+  return message.includes('自动启动失败') || message.includes('手动运行 start_local_login_helper.bat') || message.includes('本机授权助手自动启动');
+}
+
 function wait(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function helperRetryDelay(helper?: LocalBrowserLoginHelperStatus | null) {
+  const value = Number(helper?.retry_after_ms || 700);
+  return Math.max(250, Math.min(value, 2000));
 }
 
 function parseAppTime(value: string) {
@@ -1449,9 +1459,6 @@ function validateRunForm(form: RunConfig, proxies: ProxyItem[]) {
   if (!['orig', 'jpg', 'png'].includes(String(form.image_format || ''))) {
     errors.push('图片格式只能是 orig、jpg 或 png。');
   }
-  if (!Number.isInteger(Number(form.max_concurrent_requests)) || Number(form.max_concurrent_requests) <= 0) {
-    errors.push('并发数需要是大于 0 的整数。');
-  }
   if (form.proxy_id) {
     const proxy = proxies.find((item) => item.id === form.proxy_id);
     if (!proxy) {
@@ -1820,14 +1827,17 @@ function TaskFormPage() {
               <Input type="number" min={1} value={form.tweet_limit} onChange={(e) => setForm((prev) => ({ ...prev, tweet_limit: Number(e.target.value) }))} />
             </Field>
             <Field label="X账号">
-              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.account_id} onChange={(e) => setForm((prev) => ({ ...prev, account_id: Number(e.target.value) }))}>
-                <option value={0}>自动分配可用账号</option>
-                {(usableAccounts || []).map((account: Account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.capacity ? ` · ${account.capacity.score}分 · API余${account.capacity.api_remaining_estimate}` : ''}{account.status !== 'active' ? ` · ${statusLabel(account.status)}` : ''}{account.cooldown_until ? ` · 冷却至 ${account.cooldown_until}` : ''}
-                  </option>
-                ))}
-              </select>
+              <SelectMenu
+                value={String(form.account_id)}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, account_id: Number(value) }))}
+                options={[
+                  { value: '0', label: '自动分配可用账号' },
+                  ...(usableAccounts || []).map((account: Account) => ({
+                    value: String(account.id),
+                    label: `${account.label}${account.screen_name ? ` (@${account.screen_name})` : ''}${account.capacity ? ` · ${account.capacity.score}分 · API余${account.capacity.api_remaining_estimate}` : ''}${account.status !== 'active' ? ` · ${statusLabel(account.status)}` : ''}${account.cooldown_until ? ` · 冷却至 ${account.cooldown_until}` : ''}`,
+                  })),
+                ]}
+              />
             </Field>
           </div>
           <div className="grid gap-3 md:grid-cols-3">
@@ -1836,18 +1846,17 @@ function TaskFormPage() {
             <Check label="视频" checked={form.has_video} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_video: checked }))} />
           </div>
           <Field label="代理池">
-            <select
-              className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3"
-              value={form.proxy_id ?? ''}
-              onChange={(e) => setForm((prev) => ({ ...prev, proxy_id: e.target.value ? Number(e.target.value) : null }))}
-            >
-              <option value="">自动分配或不使用代理</option>
-              {usableProxies.map((proxy) => (
-                <option key={proxy.id} value={proxy.id}>
-                  {proxy.label}{proxy.cooldown_until ? ` · 冷却至 ${proxy.cooldown_until}` : ''}
-                </option>
-              ))}
-            </select>
+            <SelectMenu
+              value={form.proxy_id ? String(form.proxy_id) : ''}
+              onValueChange={(value) => setForm((prev) => ({ ...prev, proxy_id: value ? Number(value) : null }))}
+              options={[
+                { value: '', label: '自动分配或不使用代理' },
+                ...usableProxies.map((proxy) => ({
+                  value: String(proxy.id),
+                  label: `${proxy.label}${proxy.cooldown_until ? ` · 冷却至 ${proxy.cooldown_until}` : ''}`,
+                })),
+              ]}
+            />
           </Field>
           <TimeRangePicker
             value={form.time_range}
@@ -1870,30 +1879,34 @@ function TaskFormPage() {
           <CardHeader><h3 className="font-semibold">基础</h3></CardHeader>
           <CardContent className="space-y-4">
             <Field label="任务类型">
-              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.task_type} onChange={(e) => setForm((prev) => ({ ...prev, task_type: e.target.value as TaskType }))}>
-                <option value="user_media">用户媒体</option>
-                <option value="benchmark_account">对标账号</option>
-                <option value="search">搜索/Tag</option>
-                <option value="text">用户文本</option>
-                <option value="replies">评论区</option>
-                <option value="profile">主页资料</option>
-              </select>
+              <SelectMenu
+                value={form.task_type}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, task_type: value as TaskType }))}
+                options={[
+                  { value: 'user_media', label: '用户媒体' },
+                  { value: 'benchmark_account', label: '对标账号' },
+                  { value: 'search', label: '搜索/Tag' },
+                  { value: 'text', label: '用户文本' },
+                  { value: 'replies', label: '评论区' },
+                  { value: 'profile', label: '主页资料' },
+                ]}
+              />
             </Field>
             <Field label="X账号">
-              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.account_id} onChange={(e) => setForm((prev) => ({ ...prev, account_id: Number(e.target.value) }))}>
-                <option value={0}>自动分配可用账号</option>
-                {(usableAccounts || []).map((account: Account) => (
-                  <option key={account.id} value={account.id}>
-                    {account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.capacity ? ` · ${account.capacity.score}分 · API余${account.capacity.api_remaining_estimate}` : ''}{account.status !== 'active' ? ` · ${statusLabel(account.status)}` : ''}{account.cooldown_until ? ` · 冷却至 ${account.cooldown_until}` : ''}
-                  </option>
-                ))}
-              </select>
+              <SelectMenu
+                value={String(form.account_id)}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, account_id: Number(value) }))}
+                options={[
+                  { value: '0', label: '自动分配可用账号' },
+                  ...(usableAccounts || []).map((account: Account) => ({
+                    value: String(account.id),
+                    label: `${account.label}${account.screen_name ? ` (@${account.screen_name})` : ''}${account.capacity ? ` · ${account.capacity.score}分 · API余${account.capacity.api_remaining_estimate}` : ''}${account.status !== 'active' ? ` · ${statusLabel(account.status)}` : ''}${account.cooldown_until ? ` · 冷却至 ${account.cooldown_until}` : ''}`,
+                  })),
+                ]}
+              />
             </Field>
             <Field label="目标用户 / 推文链接">
               <Textarea value={form.targets} onChange={(e) => setForm((prev) => ({ ...prev, targets: e.target.value, target_limits: {} }))} rows={4} />
-            </Field>
-            <Field label="并发下载数">
-              <Input type="number" value={form.max_concurrent_requests} onChange={(e) => setForm((prev) => ({ ...prev, max_concurrent_requests: Number(e.target.value) }))} />
             </Field>
           </CardContent>
         </Card>
@@ -1918,28 +1931,31 @@ function TaskFormPage() {
             <Check label="自动同步" checked={form.auto_sync} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, auto_sync: checked }))} />
             <Check label="输出 Markdown" checked={form.md_output} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, md_output: checked }))} />
             <Field label="图片格式">
-              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.image_format} onChange={(e) => setForm((prev) => ({ ...prev, image_format: e.target.value }))}>
-                <option value="orig">orig</option>
-                <option value="jpg">jpg</option>
-                <option value="png">png</option>
-              </select>
+              <SelectMenu
+                value={form.image_format}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, image_format: value }))}
+                options={[
+                  { value: 'orig', label: 'orig' },
+                  { value: 'jpg', label: 'jpg' },
+                  { value: 'png', label: 'png' },
+                ]}
+              />
             </Field>
             <Field label="单个 Markdown 媒体数量">
               <Input type="number" value={form.media_count_limit} onChange={(e) => setForm((prev) => ({ ...prev, media_count_limit: Number(e.target.value) }))} />
             </Field>
             <Field label="代理池">
-              <select
-                className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3"
-                value={form.proxy_id ?? ''}
-                onChange={(e) => setForm((prev) => ({ ...prev, proxy_id: e.target.value ? Number(e.target.value) : null }))}
-              >
-                <option value="">自动分配或使用手填代理</option>
-                {usableProxies.map((proxy) => (
-                  <option key={proxy.id} value={proxy.id}>
-                    {proxy.label}{proxy.cooldown_until ? ` · 冷却至 ${proxy.cooldown_until}` : ''}
-                  </option>
-                ))}
-              </select>
+              <SelectMenu
+                value={form.proxy_id ? String(form.proxy_id) : ''}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, proxy_id: value ? Number(value) : null }))}
+                options={[
+                  { value: '', label: '自动分配或使用手填代理' },
+                  ...usableProxies.map((proxy) => ({
+                    value: String(proxy.id),
+                    label: `${proxy.label}${proxy.cooldown_until ? ` · 冷却至 ${proxy.cooldown_until}` : ''}`,
+                  })),
+                ]}
+              />
             </Field>
             <Field label="手填代理">
               <Input value={form.proxy} onChange={(e) => setForm((prev) => ({ ...prev, proxy: e.target.value }))} placeholder={PROXY_PLACEHOLDER} />
@@ -2564,11 +2580,16 @@ function TaskResultsPanel({
                 placeholder="搜索正文/作者/链接"
               />
             </div>
-            <select className="h-9 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3 text-sm text-[hsl(var(--text))]" value={mediaFilter} onChange={(event) => onMediaFilterChange(event.target.value)}>
-              <option value="">全部记录</option>
-              <option value="true">有媒体</option>
-              <option value="false">无媒体</option>
-            </select>
+            <SelectMenu
+              value={mediaFilter}
+              onValueChange={onMediaFilterChange}
+              triggerClassName="h-9 w-[120px]"
+              options={[
+                { value: '', label: '全部记录' },
+                { value: 'true', label: '有媒体' },
+                { value: 'false', label: '无媒体' },
+              ]}
+            />
             <Button variant="secondary" size="sm" onClick={onSearch}>搜索</Button>
             <Button variant="secondary" size="sm" onClick={onRefresh}><RefreshCcw className="h-4 w-4" />刷新</Button>
           </div>
@@ -2806,7 +2827,6 @@ function SchedulesPage() {
             </Field>
             <Field label="执行时间"><Input type="time" value={form.run_time} onChange={(e) => setForm((prev) => ({ ...prev, run_time: e.target.value }))} /></Field>
             <Field label="采集条数"><Input type="number" min={1} value={form.tweet_limit} onChange={(e) => setForm((prev) => ({ ...prev, tweet_limit: Number(e.target.value) }))} /></Field>
-            <Field label="并发数"><Input type="number" min={1} value={form.max_concurrent_requests} onChange={(e) => setForm((prev) => ({ ...prev, max_concurrent_requests: Number(e.target.value) }))} /></Field>
           </div>
           {form.schedule_type === 'weekly' && (
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-7">
@@ -3257,20 +3277,34 @@ function AccountsPage() {
       setBrowserLoginMessage('未检测到已运行的本地授权助手，正在判断是否可由本机后端自动启动...');
       let helper: LocalBrowserLoginHelperStatus | null = null;
       try {
-        helper = await api.ensureLocalBrowserLoginHelper();
+        helper = await api.ensureLocalBrowserLoginHelper({ wait_seconds: 3 });
       } catch {
         helper = null;
       }
-      if (helper?.ok || helper?.status === 'ready') {
-        setBrowserLoginMessage('本机授权助手已自动启动，正在打开 Chrome...');
-        const body = await openLocalHelperWindow(session);
-        return {
-          status: 'running',
-          message: body.message || '已自动启动本机授权助手并打开 Chrome，请在弹出的窗口完成 X 登录；Cookie 会自动回传到 VPS。',
-        };
+      if (helper?.ok || helper?.status === 'ready' || helper?.status === 'starting') {
+        const delay = helperRetryDelay(helper);
+        setBrowserLoginMessage(helper?.status === 'ready' ? '本机授权助手已自动启动，正在打开 Chrome...' : '正在启动本机授权助手，通常几秒内完成...');
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          if (attempt > 0 || helper?.status === 'starting') {
+            await wait(delay);
+          }
+          try {
+            const body = await openLocalHelperWindow(session);
+            return {
+              status: 'running',
+              message: body.message || '已自动启动本机授权助手并打开 Chrome，请在弹出的窗口完成 X 登录；Cookie 会自动回传到 VPS。',
+            };
+          } catch {
+            setBrowserLoginMessage(`正在启动本机授权助手，通常几秒内完成...（${attempt + 1}/8）`);
+          }
+        }
+        throw new Error(helper.message || '本机授权助手自动启动后仍未响应。请稍后重试，或手动运行 start_local_login_helper.bat。');
       }
       if (helper && helperCanAutoStartOnBackend(helper)) {
-        throw new Error(helper.message || '本机授权助手自动启动后仍未响应。请稍后重试，或手动运行 start_local_login_helper.bat。');
+        return {
+          status: 'helper_missing',
+          message: helper.message || '本机授权助手自动启动失败。可重试自动启动，或手动运行 start_local_login_helper.bat。',
+        };
       }
       setBrowserLoginMessage('当前后端不能直接启动这台电脑的助手，正在尝试通过本机协议唤起...');
       window.location.href = 'tw-login-helper://start';
@@ -3534,11 +3568,17 @@ function AccountsPage() {
           <CardContent className="space-y-3">
             {browserLoginStatus === 'helper_missing' ? (
               <div className="space-y-3 rounded-lg border border-[hsl(var(--warning))] bg-[rgba(251,191,36,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
-                <div className="font-semibold">这台电脑未检测到本地授权助手</div>
+                <div className="font-semibold">{helperIsLocalBackendFailure(browserLoginMessage) ? '本机授权助手自动启动失败' : '这台电脑未检测到本地授权助手'}</div>
                 <div>{browserLoginMessage || '首次使用需要运行一次安装器；安装后以后点击“开始本地授权”即可自动打开 Chrome。'}</div>
-                <div className="rounded-md border border-[rgba(251,191,36,0.28)] bg-[rgba(15,23,42,0.38)] px-3 py-2">
-                  安装器会注册本机授权助手和自动唤起协议；之后不需要重复下载。
-                </div>
+                {helperIsLocalBackendFailure(browserLoginMessage) ? (
+                  <div className="rounded-md border border-[rgba(251,191,36,0.28)] bg-[rgba(15,23,42,0.38)] px-3 py-2">
+                    当前是本机 Windows 后端，会优先重试自动启动；仍失败时再手动运行 start_local_login_helper.bat。
+                  </div>
+                ) : (
+                  <div className="rounded-md border border-[rgba(251,191,36,0.28)] bg-[rgba(15,23,42,0.38)] px-3 py-2">
+                    安装器会注册本机授权助手和自动唤起协议；之后不需要重复下载。
+                  </div>
+                )}
               </div>
             ) : browserLoginStatus === 'completed' ? (
               <div className="rounded-lg border border-[hsl(var(--success))] bg-[rgba(34,197,94,0.12)] px-4 py-3 text-sm text-[hsl(var(--text))]">
@@ -3556,11 +3596,13 @@ function AccountsPage() {
             <div className="flex flex-wrap gap-2">
               {browserLoginStatus === 'helper_missing' && (
                 <>
-                  <Button variant="secondary" size="sm" type="button" onClick={() => { window.location.href = '/api/accounts/local-browser-login/helper/install'; }}>
-                    首次使用：安装本地授权助手
-                  </Button>
+                  {!helperIsLocalBackendFailure(browserLoginMessage) && (
+                    <Button variant="secondary" size="sm" type="button" onClick={() => { window.location.href = '/api/accounts/local-browser-login/helper/install'; }}>
+                      首次使用：安装本地授权助手
+                    </Button>
+                  )}
                   <Button variant="secondary" size="sm" onClick={retryLocalHelper} disabled={browserLogin.isPending}>
-                    安装完成，继续授权
+                    {helperIsLocalBackendFailure(browserLoginMessage) ? '重试自动启动' : '安装完成，继续授权'}
                   </Button>
                 </>
               )}
@@ -4357,7 +4399,6 @@ function RunControlPage() {
                 onCustomChange={applyCustomTimeRange}
               />
             </div>
-            <Field label="并发数"><Input type="number" value={form.max_concurrent_requests} onChange={(e) => setForm((prev) => ({ ...prev, max_concurrent_requests: Number(e.target.value) }))} /></Field>
             <div className="grid gap-3 sm:grid-cols-2">
               <Check label="包含转推" checked={form.has_retweet} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_retweet: checked }))} />
               <Check label="亮点" checked={form.high_lights} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, high_lights: checked }))} />

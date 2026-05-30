@@ -6,6 +6,9 @@ set "SOURCE_DIR=%~dp0"
 set "HELPER_SOURCE=%SOURCE_DIR%local_login_helper.py"
 set "LAUNCHER_SOURCE=%SOURCE_DIR%launch_local_login_helper.bat"
 set "VPS_HOSTS=%TW_LOCAL_LOGIN_ALLOWED_HOSTS%"
+set "VENV_DIR=%APP_DIR%\.local-login-helper-venv"
+set "PYTHON_EXE=%VENV_DIR%\Scripts\python.exe"
+set "CHROMIUM_MARKER=%VENV_DIR%\.chromium-installed"
 
 if "%VPS_HOSTS%"=="" set "VPS_HOSTS=twitter.198-12-70-103.nip.io"
 
@@ -30,9 +33,9 @@ if not exist "%APP_DIR%" mkdir "%APP_DIR%"
 copy /Y "%HELPER_SOURCE%" "%APP_DIR%\local_login_helper.py" >nul
 if exist "%LAUNCHER_SOURCE%" copy /Y "%LAUNCHER_SOURCE%" "%APP_DIR%\launch_local_login_helper.bat" >nul
 
-if not exist "%APP_DIR%\.local-login-helper-venv\Scripts\python.exe" (
+if not exist "%PYTHON_EXE%" (
   echo Creating helper Python environment...
-  %PYTHON_CMD% -m venv "%APP_DIR%\.local-login-helper-venv"
+  %PYTHON_CMD% -m venv "%VENV_DIR%"
   if %ERRORLEVEL% NEQ 0 (
     echo Failed to create Python environment. Please install Python 3 first.
     pause
@@ -40,18 +43,28 @@ if not exist "%APP_DIR%\.local-login-helper-venv\Scripts\python.exe" (
   )
 )
 
-"%APP_DIR%\.local-login-helper-venv\Scripts\python.exe" -m pip show playwright >nul 2>nul
+"%PYTHON_EXE%" -m pip show playwright >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
   echo Installing Playwright runtime...
-  "%APP_DIR%\.local-login-helper-venv\Scripts\python.exe" -m pip install playwright==1.49.1
+  "%PYTHON_EXE%" -m pip install playwright==1.49.1
   if %ERRORLEVEL% NEQ 0 (
     echo Failed to install Playwright.
     pause
     exit /b 1
   )
+  if exist "%CHROMIUM_MARKER%" del /Q "%CHROMIUM_MARKER%" >nul 2>nul
 )
 
-"%APP_DIR%\.local-login-helper-venv\Scripts\python.exe" -m playwright install chromium >nul 2>nul
+if not exist "%CHROMIUM_MARKER%" (
+  echo Installing Playwright Chromium...
+  "%PYTHON_EXE%" -m playwright install chromium >nul 2>nul
+  if %ERRORLEVEL% NEQ 0 (
+    echo Failed to install Playwright Chromium.
+    pause
+    exit /b 1
+  )
+  echo installed>"%CHROMIUM_MARKER%"
+)
 
 (
   echo @echo off
@@ -59,7 +72,7 @@ if %ERRORLEVEL% NEQ 0 (
   echo set PYTHONUTF8=1
   echo set "TW_LOCAL_LOGIN_ALLOWED_HOSTS=%VPS_HOSTS%"
   echo cd /d "%APP_DIR%"
-  echo "%APP_DIR%\.local-login-helper-venv\Scripts\python.exe" "%APP_DIR%\local_login_helper.py"
+  echo "%PYTHON_EXE%" "%APP_DIR%\local_login_helper.py"
 ) > "%APP_DIR%\run_local_login_helper.bat"
 
 echo Registering Windows startup task...

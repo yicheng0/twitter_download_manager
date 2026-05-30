@@ -148,7 +148,7 @@ export const api = {
   addAccount: (payload: Record<string, unknown>) => request<{ ok: boolean }>('/api/accounts/manual', { method: 'POST', body: JSON.stringify(payload) }),
   updateAccount: (id: number, payload: { label: string; bound_proxy_id?: number | null }) => request<{ account: Account }>(`/api/accounts/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   importBitBrowserAccounts: (payload: { base_url: string; browser_ids: string[] }) => request<BitBrowserImportResponse>('/api/accounts/import/bitbrowser', { method: 'POST', body: JSON.stringify(payload) }),
-  ensureLocalBrowserLoginHelper: () => request<LocalBrowserLoginHelperStatus>('/api/accounts/local-browser-login/helper/ensure', { method: 'POST' }),
+  ensureLocalBrowserLoginHelper: (payload?: { wait_seconds?: number }) => request<LocalBrowserLoginHelperStatus>('/api/accounts/local-browser-login/helper/ensure', { method: 'POST', body: JSON.stringify(payload || {}) }),
   localBrowserLoginStart: (payload?: { label?: string; bound_proxy_id?: number | null }) => request<LocalBrowserLoginResponse>('/api/accounts/local-browser-login/start', { method: 'POST', body: JSON.stringify(payload || {}) }),
   localBrowserLoginStatus: (token: string) => request<LocalBrowserLoginResponse>(`/api/accounts/local-browser-login/status?token=${encodeURIComponent(token)}`),
   localBrowserLoginCancel: (token: string) => request<{ ok: boolean }>('/api/accounts/local-browser-login/cancel', { method: 'POST', body: JSON.stringify({ token }) }),

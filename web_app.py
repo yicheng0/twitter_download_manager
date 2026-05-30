@@ -165,7 +165,7 @@ def local_login_helper_health(timeout=1.0):
         return False
 
 
-def local_login_helper_diagnostics(status, message, ok=False, failure_reason=''):
+def local_login_helper_diagnostics(status, message, ok=False, failure_reason='', retry_after_ms=700):
     supported = os.name == 'nt'
     return {
         'ok': ok,
@@ -177,6 +177,7 @@ def local_login_helper_diagnostics(status, message, ok=False, failure_reason='')
         'helper_url': LOCAL_LOGIN_HELPER_URL,
         'helper_healthy': ok and status == 'ready',
         'failure_reason': failure_reason,
+        'retry_after_ms': retry_after_ms,
     }
 
 
@@ -204,8 +205,9 @@ def start_local_login_helper_process():
         return False, f'本地登录助手启动失败：{redact_sensitive(str(exc))}'
 
 
-def ensure_local_login_helper_running(wait_seconds=12):
+def ensure_local_login_helper_running(wait_seconds=3):
     global local_login_helper_process
+    wait_seconds = max(0, min(int(wait_seconds or 0), 12))
     if not browser_login_available():
         raise HTTPException(status_code=403, detail='浏览器登录已被 TW_WEB_ENABLE_BROWSER_LOGIN=0 禁用。')
     if local_login_helper_health():
@@ -220,11 +222,11 @@ def ensure_local_login_helper_running(wait_seconds=12):
             if not started:
                 return local_login_helper_diagnostics('unsupported' if os.name != 'nt' else 'failed', result, failure_reason=result)
             local_login_helper_process = result
-    deadline = time.time() + max(1, wait_seconds)
+    deadline = time.time() + wait_seconds
     while time.time() < deadline:
-        if local_login_helper_health(timeout=0.75):
+        if local_login_helper_health(timeout=0.35):
             return local_login_helper_diagnostics('ready', '本地 Chrome 登录助手已自动启动。', ok=True)
-        time.sleep(0.5)
+        time.sleep(0.35)
     message = '本地 Chrome 登录助手正在启动，系统会继续自动检测；如果长时间无响应，再手动运行 start_local_login_helper.bat。'
     return local_login_helper_diagnostics('starting' if started else 'failed', message)
 
@@ -250,6 +252,9 @@ setlocal
 set PYTHONUTF8=1
 set "APP_DIR=%LOCALAPPDATA%\\TwitterDownloadLocalLoginHelper"
 set "VPS_HOSTS={safe_host},127.0.0.1,localhost"
+set "VENV_DIR=%APP_DIR%\\.local-login-helper-venv"
+set "PYTHON_EXE=%VENV_DIR%\\Scripts\\python.exe"
+set "CHROMIUM_MARKER=%VENV_DIR%\\.chromium-installed"
 
 echo Installing local authorization helper...
 echo Target: %APP_DIR%
@@ -272,9 +277,9 @@ if %ERRORLEVEL% NEQ 0 (
   exit /b 1
 )
 
-if not exist "%APP_DIR%\\.local-login-helper-venv\\Scripts\\python.exe" (
+if not exist "%PYTHON_EXE%" (
   echo Creating helper Python environment...
-  %PYTHON_CMD% -m venv "%APP_DIR%\\.local-login-helper-venv"
+  %PYTHON_CMD% -m venv "%VENV_DIR%"
   if %ERRORLEVEL% NEQ 0 (
     echo Failed to create Python environment. Please install Python 3 first.
     pause
@@ -282,18 +287,28 @@ if not exist "%APP_DIR%\\.local-login-helper-venv\\Scripts\\python.exe" (
   )
 )
 
-"%APP_DIR%\\.local-login-helper-venv\\Scripts\\python.exe" -m pip show playwright >nul 2>nul
+"%PYTHON_EXE%" -m pip show playwright >nul 2>nul
 if %ERRORLEVEL% NEQ 0 (
   echo Installing Playwright runtime...
-  "%APP_DIR%\\.local-login-helper-venv\\Scripts\\python.exe" -m pip install playwright==1.49.1
+  "%PYTHON_EXE%" -m pip install playwright==1.49.1
   if %ERRORLEVEL% NEQ 0 (
     echo Failed to install Playwright.
     pause
     exit /b 1
   )
+  if exist "%CHROMIUM_MARKER%" del /Q "%CHROMIUM_MARKER%" >nul 2>nul
 )
 
-"%APP_DIR%\\.local-login-helper-venv\\Scripts\\python.exe" -m playwright install chromium >nul 2>nul
+if not exist "%CHROMIUM_MARKER%" (
+  echo Installing Playwright Chromium...
+  "%PYTHON_EXE%" -m playwright install chromium >nul 2>nul
+  if %ERRORLEVEL% NEQ 0 (
+    echo Failed to install Playwright Chromium.
+    pause
+    exit /b 1
+  )
+  echo installed>"%CHROMIUM_MARKER%"
+)
 
 (
   echo @echo off
@@ -301,7 +316,7 @@ if %ERRORLEVEL% NEQ 0 (
   echo set PYTHONUTF8=1
   echo set "TW_LOCAL_LOGIN_ALLOWED_HOSTS=%VPS_HOSTS%"
   echo cd /d "%APP_DIR%"
-  echo "%APP_DIR%\\.local-login-helper-venv\\Scripts\\python.exe" "%APP_DIR%\\local_login_helper.py"
+  echo "%PYTHON_EXE%" "%APP_DIR%\\local_login_helper.py"
 ) > "%APP_DIR%\\run_local_login_helper.bat"
 
 (
@@ -4253,6 +4268,7 @@ def create_queued_task(user_id, account_id, config, resource_mode='manual', sche
             conn.execute('begin immediate')
             account = select_account_for_task_in_conn(conn, requested_account_id)
             account_id = account['id']
+            apply_automatic_concurrency(config)
             apply_adaptive_throttle(config, account, conn)
             api_budget = int(config.get('api_budget') or estimate_api_budget(config) or 0)
             if api_budget:
@@ -4946,6 +4962,58 @@ def safe_max_concurrent_requests(value):
     return max(1, min(parsed, MAX_CONCURRENT_REQUESTS_CAP))
 
 
+def task_target_count(config):
+    targets = str(config.get('targets') or '')
+    if not targets.strip():
+        return 1
+    if config.get('task_type') in {'user_media', 'benchmark_account', 'text', 'profile'}:
+        normalized = normalize_user_targets(targets)
+        return len([item for item in normalized.split(',') if item.strip()]) or 1
+    return len([item for item in targets.replace(',', '\n').splitlines() if item.strip()]) or 1
+
+
+def planned_task_size(config):
+    task_type = config.get('task_type')
+    if task_type == 'benchmark_account':
+        target_limits = config.get('target_limits') if isinstance(config.get('target_limits'), dict) else {}
+        if target_limits:
+            total = 0
+            for value in target_limits.values():
+                try:
+                    total += max(1, int(value or 1))
+                except (TypeError, ValueError):
+                    total += 1
+            return total
+        return task_target_count(config) * max(1, parse_int_field(config.get('tweet_limit'), 10, '拉取条数'))
+    if task_type == 'search':
+        return max(1, parse_int_field(config.get('down_count'), 50, '下载数量'))
+    if task_type == 'user_media':
+        return max(0, parse_int_field(config.get('media_count_limit'), 350, '单个 Markdown 媒体数量'))
+    return 0
+
+
+def automatic_max_concurrent_requests(config):
+    task_type = config.get('task_type')
+    if task_type in {'text', 'profile', 'replies'}:
+        return 1
+    if task_type not in {'benchmark_account', 'user_media', 'search'}:
+        return safe_max_concurrent_requests(None)
+    concurrency = DEFAULT_MAX_CONCURRENT_REQUESTS
+    size = planned_task_size(config)
+    if (
+        (task_type == 'benchmark_account' and size >= 80)
+        or (task_type == 'search' and size >= 100)
+        or (task_type == 'user_media' and size >= 350)
+    ):
+        concurrency = max(concurrency, 3)
+    return safe_max_concurrent_requests(concurrency)
+
+
+def apply_automatic_concurrency(config):
+    config['max_concurrent_requests'] = automatic_max_concurrent_requests(config)
+    return config
+
+
 def normalize_user_targets(value, label='目标账号'):
     from benchmark_down import parse_screen_name
 
@@ -4987,7 +5055,6 @@ def build_task_config(form):
         'task_type': task_type,
         'targets': form.get('targets') or '',
         'time_range': form.get('time_range') or task_default_time_range(),
-        'max_concurrent_requests': safe_max_concurrent_requests(form.get('max_concurrent_requests')),
     }
     for name in ['has_retweet', 'high_lights', 'likes', 'has_video', 'down_log', 'auto_sync', 'md_output', 'media_latest', 'text_down', 'media_down']:
         config[name] = form.get(name) == 'on'
@@ -5008,6 +5075,7 @@ def build_task_config(form):
     )
     config['api_budget'] = int(form.get('api_budget') or 0)
     config['target_limits'] = parse_target_limits(form.get('target_limits'))
+    apply_automatic_concurrency(config)
     return config
 
 
@@ -5036,7 +5104,6 @@ def validate_task_config(config):
         raise HTTPException(status_code=400, detail='请填写目标用户或推文链接')
     if task_type == 'search' and not str(config.get('tag') or config.get('advanced_filter') or '').strip():
         raise HTTPException(status_code=400, detail='请填写 Tag 或高级搜索条件')
-    config['max_concurrent_requests'] = safe_max_concurrent_requests(config.get('max_concurrent_requests'))
     config['down_count'] = max(50, min(parse_int_field(config.get('down_count'), 50, '下载数量'), 500))
     if task_type in {'user_media', 'benchmark_account', 'text', 'profile'}:
         config['targets'] = normalize_user_targets(config.get('targets'))
@@ -5060,6 +5127,7 @@ def validate_task_config(config):
         config['likes'] = False
         if not int(config.get('api_budget') or 0):
             config['api_budget'] = estimate_api_budget(config)
+    apply_automatic_concurrency(config)
     if config.get('time_range') and not re.match(r'^\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}$', str(config.get('time_range'))):
         raise HTTPException(status_code=400, detail='时间范围格式应为 YYYY-MM-DD:YYYY-MM-DD')
     if config.get('time_range'):
@@ -5097,7 +5165,6 @@ def build_schedule_config(data):
         'task_type': task_type,
         'targets': data.get('targets') or '',
         'time_range': data.get('time_range') or task_default_time_range(),
-        'max_concurrent_requests': safe_max_concurrent_requests(data.get('max_concurrent_requests')),
         'has_retweet': bool(data.get('has_retweet')),
         'high_lights': bool(data.get('high_lights')),
         'likes': bool(data.get('likes')),
@@ -5114,6 +5181,7 @@ def build_schedule_config(data):
         'monitor_interval_minutes': monitor_interval,
         'first_run_policy': data.get('first_run_policy') or 'baseline',
     }
+    apply_automatic_concurrency(config)
     apply_proxy_selection(config, data.get('proxy_id'))
     validate_task_config(config)
     return config
@@ -6017,7 +6085,6 @@ async def api_create_task(request: Request, user=Depends(require_api_user)):
         'task_type': data.get('task_type'),
         'targets': data.get('targets') or '',
         'time_range': data.get('time_range') or '',
-        'max_concurrent_requests': safe_max_concurrent_requests(data.get('max_concurrent_requests')),
     }
     for name in ['has_retweet', 'high_lights', 'likes', 'has_video', 'down_log', 'auto_sync', 'md_output', 'media_latest', 'text_down', 'media_down']:
         config[name] = bool(data.get(name))
@@ -6038,6 +6105,7 @@ async def api_create_task(request: Request, user=Depends(require_api_user)):
             'target_limits': data.get('target_limits') or {},
         }
     )
+    apply_automatic_concurrency(config)
     try:
         if data.get('proxy_id'):
             config['proxy_id'] = int(data.get('proxy_id') or 0)
@@ -6249,8 +6317,12 @@ async def api_add_account_manual(request: Request, user=Depends(require_api_admi
 
 
 @app.post('/api/accounts/local-browser-login/helper/ensure')
-def api_local_browser_login_helper_ensure(user=Depends(require_api_admin)):
-    return ensure_local_login_helper_running()
+async def api_local_browser_login_helper_ensure(request: Request, user=Depends(require_api_admin)):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    return ensure_local_login_helper_running(data.get('wait_seconds', 3))
 
 
 @app.get('/api/accounts/local-browser-login/helper/install')
