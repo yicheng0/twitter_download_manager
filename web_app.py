@@ -88,11 +88,14 @@ ACCOUNT_NEW_TASK_LIMIT_24H = max(1, int(os.environ.get('TW_ACCOUNT_NEW_TASK_LIMI
 ACCOUNT_STABLE_TASK_LIMIT_24H = max(1, int(os.environ.get('TW_ACCOUNT_STABLE_TASK_LIMIT_24H', '20') or 20))
 ACCOUNT_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_MIN_INTERVAL_SECONDS', str(10 * 60)) or 0))
 ACCOUNT_NEW_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_NEW_MIN_INTERVAL_SECONDS', str(30 * 60)) or 0))
-ACCOUNT_RATE_LIMIT_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_RATE_LIMIT_COOLDOWN_SECONDS', str(6 * 60 * 60)) or 0))
+ACCOUNT_RATE_LIMIT_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_RATE_LIMIT_COOLDOWN_SECONDS', str(12 * 60 * 60)) or 0))
 ACCOUNT_TRANSIENT_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_TRANSIENT_COOLDOWN_SECONDS', str(30 * 60)) or 0))
 PROXY_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_PROXY_MIN_INTERVAL_SECONDS', str(3 * 60)) or 0))
 PROXY_FAILURE_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_PROXY_FAILURE_COOLDOWN_SECONDS', str(30 * 60)) or 0))
 PROXY_RATE_LIMIT_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_PROXY_RATE_LIMIT_COOLDOWN_SECONDS', str(2 * 60 * 60)) or 0))
+DEFAULT_MAX_CONCURRENT_REQUESTS = max(1, int(os.environ.get('TW_DEFAULT_MAX_CONCURRENT_REQUESTS', '2') or 2))
+MAX_CONCURRENT_REQUESTS_CAP = max(DEFAULT_MAX_CONCURRENT_REQUESTS, int(os.environ.get('TW_MAX_CONCURRENT_REQUESTS_CAP', '3') or 3))
+ACCOUNT_HEALTH_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_HEALTH_MIN_INTERVAL_SECONDS', str(30 * 60)) or 0))
 SERVER_TIMEZONE = os.environ.get('TW_WEB_TIMEZONE', time.tzname[0] if time.tzname else 'local')
 OPERATION_LOG_RETENTION_DAYS = max(1, int(os.environ.get('TW_OPERATION_LOG_RETENTION_DAYS', '90') or 90))
 SCHEDULE_FAILURE_DISABLE_THRESHOLD = max(1, int(os.environ.get('TW_SCHEDULE_FAILURE_DISABLE_THRESHOLD', '3') or 3))
@@ -165,14 +168,16 @@ def local_browser_login_payload(token):
     }
 HEALTH_CHECK_INTERVAL = int(os.environ.get('TW_WEB_HEALTH_INTERVAL', '900') or 900)
 TASK_RETRY_DELAY_SECONDS = int(os.environ.get('TW_WEB_RETRY_DELAY_SECONDS', '30') or 30)
-WORKER_CONCURRENCY = max(1, int(os.environ.get('TW_WORKER_CONCURRENCY', '2') or 2))
+WORKER_CONCURRENCY = max(1, int(os.environ.get('TW_WORKER_CONCURRENCY', '1') or 1))
 SQLITE_BUSY_TIMEOUT_MS = max(1000, int(os.environ.get('TW_SQLITE_BUSY_TIMEOUT_MS', '5000') or 5000))
 TASK_LEASE_TIMEOUT_SECONDS = max(60, int(os.environ.get('TW_TASK_LEASE_TIMEOUT_SECONDS', '300') or 300))
 TASK_HEARTBEAT_SECONDS = max(5, int(os.environ.get('TW_TASK_HEARTBEAT_SECONDS', '15') or 15))
-ACCOUNT_API_INTERVAL_SECONDS = float(os.environ.get('TW_ACCOUNT_API_INTERVAL_SECONDS', '2') or 2)
+ACCOUNT_API_INTERVAL_SECONDS = float(os.environ.get('TW_ACCOUNT_API_INTERVAL_SECONDS', '15') or 15)
 PROXY_API_INTERVAL_SECONDS = float(os.environ.get('TW_PROXY_API_INTERVAL_SECONDS', '0.5') or 0.5)
 MEDIA_DOWNLOAD_INTERVAL_SECONDS = float(os.environ.get('TW_MEDIA_DOWNLOAD_INTERVAL_SECONDS', '0') or 0)
-CRAWLER_REQUEST_RETRIES = max(1, int(os.environ.get('TW_CRAWLER_REQUEST_RETRIES', '3') or 3))
+CRAWLER_REQUEST_RETRIES = max(1, int(os.environ.get('TW_CRAWLER_REQUEST_RETRIES', '1') or 1))
+CRAWLER_PAGE_DELAY_SECONDS = float(os.environ.get('TW_CRAWLER_PAGE_DELAY_SECONDS', '6') or 6)
+MEDIA_DOWNLOAD_RETRIES = max(1, int(os.environ.get('TW_MEDIA_DOWNLOAD_RETRIES', '5') or 5))
 CREDENTIAL_KEY = os.environ.get('TW_WEB_CREDENTIAL_KEY', '').strip()
 RESULT_DB_TYPES = {'postgresql', 'mysql'}
 health_state = {
@@ -349,6 +354,7 @@ def migration_baseline_schema(conn):
     ensure_column(conn, 'tasks', 'progress_total', 'integer not null default 0')
     ensure_column(conn, 'tasks', 'progress_done', 'integer not null default 0')
     ensure_column(conn, 'tasks', 'api_calls', 'integer not null default 0')
+    ensure_column(conn, 'tasks', 'api_call_budget', 'integer not null default 0')
     ensure_column(conn, 'tasks', 'download_count', 'integer not null default 0')
     ensure_column(conn, 'result_db_configs', 'last_synced_at', 'text')
 
@@ -743,6 +749,7 @@ def task_payload(task, include_config=False, include_log=False, include_files=Fa
         'progress_total': task['progress_total'] if 'progress_total' in task.keys() else 0,
         'progress_done': task['progress_done'] if 'progress_done' in task.keys() else 0,
         'api_calls': task['api_calls'] if 'api_calls' in task.keys() else 0,
+        'api_call_budget': task['api_call_budget'] if 'api_call_budget' in task.keys() else 0,
         'download_count': task['download_count'] if 'download_count' in task.keys() else 0,
         'progress': {
             'total': task['progress_total'] if 'progress_total' in task.keys() else 0,
@@ -2083,10 +2090,32 @@ def resource_policy_payload():
         'account_new_min_interval_seconds': ACCOUNT_NEW_MIN_INTERVAL_SECONDS,
         'account_rate_limit_cooldown_seconds': ACCOUNT_RATE_LIMIT_COOLDOWN_SECONDS,
         'account_transient_cooldown_seconds': ACCOUNT_TRANSIENT_COOLDOWN_SECONDS,
+        'default_max_concurrent_requests': DEFAULT_MAX_CONCURRENT_REQUESTS,
+        'max_concurrent_requests_cap': MAX_CONCURRENT_REQUESTS_CAP,
+        'worker_concurrency': WORKER_CONCURRENCY,
+        'account_api_interval_seconds': ACCOUNT_API_INTERVAL_SECONDS,
+        'crawler_request_retries': CRAWLER_REQUEST_RETRIES,
         'proxy_min_interval_seconds': PROXY_MIN_INTERVAL_SECONDS,
         'proxy_failure_cooldown_seconds': PROXY_FAILURE_COOLDOWN_SECONDS,
         'proxy_rate_limit_cooldown_seconds': PROXY_RATE_LIMIT_COOLDOWN_SECONDS,
+        'account_health_min_interval_seconds': ACCOUNT_HEALTH_MIN_INTERVAL_SECONDS,
+        'crawler_page_delay_seconds': CRAWLER_PAGE_DELAY_SECONDS,
+        'media_download_retries': MEDIA_DOWNLOAD_RETRIES,
     }
+
+
+def estimate_api_budget(config):
+    task_type = config.get('task_type')
+    if task_type == 'benchmark_account':
+        targets = normalize_user_targets(config.get('targets') or '')
+        target_count = len([item for item in targets.replace(',', '\n').splitlines() if item.strip()]) or 1
+        tweet_limit = max(1, int(config.get('tweet_limit') or 10))
+        return target_count * (1 + ((tweet_limit + 19) // 20))
+    if task_type == 'user_media':
+        targets = normalize_user_targets(config.get('targets') or '')
+        target_count = len([item for item in targets.replace(',', '\n').splitlines() if item.strip()]) or 1
+        return target_count * 3
+    return 0
 
 
 def select_account_for_task_in_conn(conn, preferred_account_id=0):
@@ -2113,7 +2142,7 @@ def select_account_for_task(preferred_account_id=0):
         return select_account_for_task_in_conn(conn, preferred_account_id)
 
 
-def select_proxy_for_task_in_conn(conn, preferred_proxy_id=0, manual_proxy=''):
+def select_proxy_for_task_in_conn(conn, preferred_proxy_id=0, manual_proxy='', account_id=None):
     if preferred_proxy_id:
         proxy = conn.execute("select * from proxies where id = ? and enabled = 1 and status = 'active'", (preferred_proxy_id,)).fetchone()
         if not proxy:
@@ -2123,6 +2152,24 @@ def select_proxy_for_task_in_conn(conn, preferred_proxy_id=0, manual_proxy=''):
         return proxy
     if manual_proxy:
         return None
+    if account_id:
+        recent = conn.execute(
+            '''
+            select proxies.*
+            from tasks
+            join proxies on proxies.id = tasks.proxy_id
+            where tasks.account_id = ?
+              and tasks.proxy_id is not null
+              and proxies.enabled = 1
+              and proxies.status = 'active'
+              and tasks.status = 'completed'
+            order by tasks.finished_at desc, tasks.created_at desc
+            limit 1
+            ''',
+            (account_id,),
+        ).fetchone()
+        if recent and proxy_available_for_task(recent):
+            return recent
     rows = conn.execute("select * from proxies where enabled = 1 and status = 'active'").fetchall()
     candidates = [row for row in rows if proxy_available_for_task(row)]
     if not candidates:
@@ -2310,7 +2357,21 @@ def resource_cooldown_for_error(error_type, resource_type):
     return 0
 
 
-def record_task_resource_result(task, status, error_type):
+def parse_crawler_rate_limit_reset(log_text):
+    matches = re.findall(r'CRAWLER_RATE_LIMIT_RESET=([0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2})', log_text or '')
+    if not matches:
+        return None
+    latest = None
+    for value in matches:
+        parsed = row_datetime(value)
+        if parsed and (latest is None or parsed > latest):
+            latest = parsed
+    if latest and latest > datetime.now():
+        return latest.strftime('%Y-%m-%d %H:%M:%S')
+    return None
+
+
+def record_task_resource_result(task, status, error_type, rate_limit_reset_at=None):
     account_id = task.get('account_id')
     proxy_id = task.get('proxy_id') or None
     error_label = error_type or status
@@ -2345,23 +2406,25 @@ def record_task_resource_result(task, status, error_type):
                     (account_status, error_label, account_id),
                 )
             elif account_cooldown:
+                cooldown_until = rate_limit_reset_at if error_type == 'rate_limited' and rate_limit_reset_at else seconds_from_now(account_cooldown)
                 conn.execute(
                     '''
                     update accounts
                     set failure_count = coalesce(failure_count, 0) + 1, last_error = ?, cooldown_until = ?
                     where id = ?
                     ''',
-                    (error_label, seconds_from_now(account_cooldown), account_id),
+                    (error_label, cooldown_until, account_id),
                 )
         if proxy_id and error_type in {'network_failed', 'rate_limited'}:
             proxy_cooldown = resource_cooldown_for_error(error_type, 'proxy')
+            cooldown_until = rate_limit_reset_at if error_type == 'rate_limited' and rate_limit_reset_at else seconds_from_now(proxy_cooldown)
             conn.execute(
                 '''
                 update proxies
                 set failure_count = coalesce(failure_count, 0) + 1, last_error = ?, cooldown_until = ?
                 where id = ?
                 ''',
-                (error_label, seconds_from_now(proxy_cooldown), proxy_id),
+                (error_label, cooldown_until, proxy_id),
             )
 
 
@@ -2896,12 +2959,15 @@ def create_queued_task(user_id, account_id, config, resource_mode='manual', sche
     log_path = task_dir / 'task.log'
     requested_account_id = int(account_id or 0)
     requested_proxy_id = int(config.get('proxy_id') or 0)
+    api_budget = int(config.get('api_budget') or estimate_api_budget(config) or 0)
+    if api_budget:
+        config['api_budget'] = api_budget
     with db() as conn:
         try:
             conn.execute('begin immediate')
             account = select_account_for_task_in_conn(conn, requested_account_id)
-            proxy = select_proxy_for_task_in_conn(conn, requested_proxy_id, config.get('proxy') or '')
             account_id = account['id']
+            proxy = select_proxy_for_task_in_conn(conn, requested_proxy_id, config.get('proxy') or '', account_id=account_id)
             if proxy:
                 config['proxy'] = normalize_proxy_url(proxy['proxy'])
                 config['proxy_id'] = proxy['id']
@@ -2914,8 +2980,8 @@ def create_queued_task(user_id, account_id, config, resource_mode='manual', sche
             cursor = conn.execute(
                 '''
                 insert into tasks
-                  (user_id, account_id, proxy_id, schedule_id, resource_mode, task_type, title, config_json, status, output_dir, log_path, created_at)
-                values (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+                  (user_id, account_id, proxy_id, schedule_id, resource_mode, task_type, title, config_json, status, output_dir, log_path, created_at, api_call_budget)
+                values (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)
                 ''',
                 (
                     user_id,
@@ -2929,6 +2995,7 @@ def create_queued_task(user_id, account_id, config, resource_mode='manual', sche
                     str(task_dir),
                     str(log_path),
                     reserved_at,
+                    api_budget,
                 ),
             )
             task_id = cursor.lastrowid
@@ -3016,9 +3083,21 @@ def run_health_check_once():
     try:
         with db() as conn:
             placeholders = ','.join('?' for _ in ACCOUNT_USABLE_STATUSES)
-            accounts = conn.execute(f"select * from accounts where status in ({placeholders}) order by id desc", tuple(ACCOUNT_USABLE_STATUSES)).fetchall()
+            accounts = conn.execute(
+                f'''
+                select * from accounts
+                where status in ({placeholders})
+                  and id not in (select distinct account_id from tasks where status = 'running' and account_id is not null)
+                order by id desc
+                ''',
+                tuple(ACCOUNT_USABLE_STATUSES),
+            ).fetchall()
             proxies = conn.execute("select * from proxies where enabled = 1 order by id desc").fetchall()
         for account in accounts:
+            if in_cooldown(account):
+                continue
+            if seconds_since(account['last_checked_at'] if 'last_checked_at' in account.keys() else None) < ACCOUNT_HEALTH_MIN_INTERVAL_SECONDS:
+                continue
             check_account_row(account)
         for proxy in proxies:
             check_proxy_row(proxy)
@@ -3058,8 +3137,11 @@ def classify_failure(log_text, return_code):
             'network_failed': '网络或代理异常',
             'target_unavailable': '目标不存在、不可访问或内容权限不足',
             'api_changed': 'X 接口结构可能已变化',
+            'budget_exhausted': 'API 预算已用尽',
         }
         return error_type, messages.get(error_type, f'任务失败, 退出码 {return_code}')
+    if 'api 预算已用尽' in lower or 'api request budget exhausted' in lower:
+        return 'budget_exhausted', 'API 预算已用尽'
     if 'rate limit exceeded' in lower or 'api次数已超限' in log_text:
         return 'rate_limited', 'X API 次数已超限'
     if 'auth' in lower or 'ct0' in lower or 'cookie' in lower or '401' in lower or '403' in lower or '认证' in log_text:
@@ -3074,12 +3156,12 @@ def classify_failure(log_text, return_code):
 
 
 def should_retry_task(error_type):
-    return error_type in {'network_failed', 'rate_limited'}
+    return error_type in {'network_failed'}
 
 
 def parse_log_metric(log_text, metric):
     patterns = {
-        'api_calls': [r'共调用(\d+)次API', r'API 调用\s*(\d+)\s*次'],
+        'api_calls': [r'共调用(\d+)次API', r'API 调用\s*(\d+)\s*次', r'API 已用\s*(\d+)\s*次'],
         'downloads': [r'共下载(\d+)份图片/视频', r'下载\s*(\d+)\s*份文件'],
     }
     for pattern in patterns.get(metric, []):
@@ -3295,6 +3377,10 @@ def run_task(task, worker_id='worker-1'):
     child_env.setdefault('TW_PROXY_API_INTERVAL_SECONDS', str(PROXY_API_INTERVAL_SECONDS))
     child_env.setdefault('TW_MEDIA_DOWNLOAD_INTERVAL_SECONDS', str(MEDIA_DOWNLOAD_INTERVAL_SECONDS))
     child_env.setdefault('TW_CRAWLER_REQUEST_RETRIES', str(CRAWLER_REQUEST_RETRIES))
+    child_env.setdefault('TW_CRAWLER_PAGE_DELAY_SECONDS', str(CRAWLER_PAGE_DELAY_SECONDS))
+    child_env.setdefault('TW_MEDIA_DOWNLOAD_RETRIES', str(MEDIA_DOWNLOAD_RETRIES))
+    child_env.setdefault('TW_DEFAULT_MAX_CONCURRENT_REQUESTS', str(DEFAULT_MAX_CONCURRENT_REQUESTS))
+    child_env.setdefault('TW_MAX_CONCURRENT_REQUESTS_CAP', str(MAX_CONCURRENT_REQUESTS_CAP))
     with open(log_path, 'a', encoding='utf-8', errors='replace') as log_file:
         log_file.write(f'[{now()}] 启动任务 #{task["id"]}: {task["title"]}\n')
         log_file.flush()
@@ -3346,14 +3432,17 @@ def run_task(task, worker_id='worker-1'):
         error_type = status
         summary = task_summary(task)
         has_partial_result = bool(summary['records'] or summary['files'])
-        if has_partial_result:
+        if error_type == 'budget_exhausted':
+            status = 'partial_failed' if has_partial_result else 'completed'
+            error = 'API 预算已用尽；已按降载策略停止'
+        elif has_partial_result:
             status = 'partial_failed'
             error = f'{error}；已保留部分采集结果'
     retry_count = int(task.get('retry_count') or 0)
     max_retries = int(task.get('max_retries') or 2)
     if return_code != 0 and not has_partial_result and should_retry_task(error_type) and retry_count < max_retries:
         next_retry_count = retry_count + 1
-        record_task_resource_result(task, status, error_type)
+        record_task_resource_result(task, status, error_type, parse_crawler_rate_limit_reset(log_text))
         with open(log_path, 'a', encoding='utf-8', errors='replace') as log_file:
             log_file.write(f'\n[{now()}] {error}，准备第 {next_retry_count}/{max_retries} 次自动重试。\n')
         with db() as conn:
@@ -3403,7 +3492,7 @@ def run_task(task, worker_id='worker-1'):
             ),
         )
         refreshed = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id where tasks.id = ?', (task['id'],)).fetchone()
-    record_task_resource_result(task, status, error_type)
+    record_task_resource_result(task, status, error_type, parse_crawler_rate_limit_reset(log_text))
     record_schedule_task_result(task, status, error_type, error)
     if refreshed:
         write_summary_report(refreshed)
@@ -3538,6 +3627,14 @@ def parse_int_field(value, default, label):
         raise HTTPException(status_code=400, detail=f'{label}需要是整数')
 
 
+def safe_max_concurrent_requests(value):
+    try:
+        parsed = int(value or DEFAULT_MAX_CONCURRENT_REQUESTS)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_MAX_CONCURRENT_REQUESTS
+    return max(1, min(parsed, MAX_CONCURRENT_REQUESTS_CAP))
+
+
 def normalize_user_targets(value, label='目标账号'):
     from benchmark_down import parse_screen_name
 
@@ -3564,7 +3661,7 @@ def build_task_config(form):
         'task_type': task_type,
         'targets': form.get('targets') or '',
         'time_range': form.get('time_range') or task_default_time_range(),
-        'max_concurrent_requests': int(form.get('max_concurrent_requests') or 8),
+        'max_concurrent_requests': safe_max_concurrent_requests(form.get('max_concurrent_requests')),
     }
     for name in ['has_retweet', 'high_lights', 'likes', 'has_video', 'down_log', 'auto_sync', 'md_output', 'media_latest', 'text_down', 'media_down']:
         config[name] = form.get(name) == 'on'
@@ -3583,6 +3680,7 @@ def build_task_config(form):
             'search_advanced': form.get('search_advanced') or '',
         }
     )
+    config['api_budget'] = int(form.get('api_budget') or 0)
     return config
 
 
@@ -3611,6 +3709,8 @@ def validate_task_config(config):
         raise HTTPException(status_code=400, detail='请填写目标用户或推文链接')
     if task_type == 'search' and not str(config.get('tag') or config.get('advanced_filter') or '').strip():
         raise HTTPException(status_code=400, detail='请填写 Tag 或高级搜索条件')
+    config['max_concurrent_requests'] = safe_max_concurrent_requests(config.get('max_concurrent_requests'))
+    config['down_count'] = max(50, min(parse_int_field(config.get('down_count'), 50, '下载数量'), 500))
     if task_type in {'user_media', 'benchmark_account', 'text', 'profile'}:
         config['targets'] = normalize_user_targets(config.get('targets'))
         if not config['targets']:
@@ -3620,6 +3720,13 @@ def validate_task_config(config):
         if tweet_limit <= 0:
             raise HTTPException(status_code=400, detail='拉取条数需要是大于 0 的整数')
         config['tweet_limit'] = tweet_limit
+        if not int(config.get('api_budget') or 0):
+            config['api_budget'] = estimate_api_budget(config)
+    if task_type == 'user_media':
+        config['has_retweet'] = False
+        config['likes'] = False
+        if not int(config.get('api_budget') or 0):
+            config['api_budget'] = estimate_api_budget(config)
     if config.get('time_range') and not re.match(r'^\d{4}-\d{2}-\d{2}:\d{4}-\d{2}-\d{2}$', str(config.get('time_range'))):
         raise HTTPException(status_code=400, detail='时间范围格式应为 YYYY-MM-DD:YYYY-MM-DD')
     if config.get('time_range'):
@@ -3653,7 +3760,7 @@ def build_schedule_config(data):
         'task_type': task_type,
         'targets': data.get('targets') or '',
         'time_range': data.get('time_range') or task_default_time_range(),
-        'max_concurrent_requests': int(data.get('max_concurrent_requests') or 8),
+        'max_concurrent_requests': safe_max_concurrent_requests(data.get('max_concurrent_requests')),
         'has_retweet': bool(data.get('has_retweet')),
         'high_lights': bool(data.get('high_lights')),
         'likes': bool(data.get('likes')),
@@ -3665,6 +3772,7 @@ def build_schedule_config(data):
         'media_count_limit': int(data.get('media_count_limit') or 350),
         'proxy': data.get('proxy') or '',
         'tweet_limit': parse_int_field(data.get('tweet_limit'), 10, '拉取条数'),
+        'api_budget': int(data.get('api_budget') or 0),
     }
     apply_proxy_selection(config, data.get('proxy_id'))
     validate_task_config(config)
@@ -4072,7 +4180,7 @@ def api_run_config(user=Depends(require_api_user)):
         'image_format': settings.get('image_format', 'orig'),
         'has_video': bool(settings.get('has_video', True)),
         'log_output': True,
-        'max_concurrent_requests': int(settings.get('max_concurrent_requests', 8) or 8),
+        'max_concurrent_requests': safe_max_concurrent_requests(settings.get('max_concurrent_requests')),
         'proxy': redact_proxy_url(settings.get('proxy', '')),
         'proxies': proxies,
         'proxy_id': settings.get('proxy_id'),
@@ -4467,7 +4575,7 @@ async def api_create_task(request: Request, user=Depends(require_api_user)):
         'task_type': data.get('task_type'),
         'targets': data.get('targets') or '',
         'time_range': data.get('time_range') or '',
-        'max_concurrent_requests': int(data.get('max_concurrent_requests') or 8),
+        'max_concurrent_requests': safe_max_concurrent_requests(data.get('max_concurrent_requests')),
     }
     for name in ['has_retweet', 'high_lights', 'likes', 'has_video', 'down_log', 'auto_sync', 'md_output', 'media_latest', 'text_down', 'media_down']:
         config[name] = bool(data.get(name))
@@ -4478,12 +4586,13 @@ async def api_create_task(request: Request, user=Depends(require_api_user)):
             'proxy': data.get('proxy') or '',
             'tag': data.get('tag') or '',
             'advanced_filter': data.get('advanced_filter') or '',
-            'down_count': int(data.get('down_count') or 50),
+            'down_count': parse_int_field(data.get('down_count'), 50, '下载数量'),
             'tweet_limit': parse_int_field(data.get('tweet_limit'), 10, '拉取条数'),
             'min_replies': int(data.get('min_replies') or 1),
             'min_faves': int(data.get('min_faves') or 0),
             'min_retweets': int(data.get('min_retweets') or 0),
             'search_advanced': data.get('search_advanced') or '',
+            'api_budget': int(data.get('api_budget') or 0),
         }
     )
     try:

@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta
@@ -8,6 +9,18 @@ from urllib.parse import urlparse
 
 from proxy_utils import proxy_for_httpx
 from crawler_runtime import CrawlerError, classify_exception
+
+
+DEFAULT_MAX_CONCURRENT_REQUESTS = max(1, int(os.environ.get('TW_DEFAULT_MAX_CONCURRENT_REQUESTS', '2') or 2))
+MAX_CONCURRENT_REQUESTS_CAP = max(DEFAULT_MAX_CONCURRENT_REQUESTS, int(os.environ.get('TW_MAX_CONCURRENT_REQUESTS_CAP', '3') or 3))
+
+
+def safe_max_concurrent_requests(value):
+    try:
+        parsed = int(value or DEFAULT_MAX_CONCURRENT_REQUESTS)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_MAX_CONCURRENT_REQUESTS
+    return max(1, min(parsed, MAX_CONCURRENT_REQUESTS_CAP))
 
 
 def parse_screen_name(value):
@@ -90,15 +103,15 @@ def run_user_media(config, cookie, output_dir):
     media_main.settings['image_format'] = config.get('image_format') or 'orig'
     media_main.settings['has_video'] = bool(config.get('has_video', True))
     media_main.settings['log_output'] = True
-    media_main.settings['max_concurrent_requests'] = int(config.get('max_concurrent_requests') or 8)
+    media_main.settings['max_concurrent_requests'] = safe_max_concurrent_requests(config.get('max_concurrent_requests'))
     media_main.settings['proxy'] = proxy or ''
     media_main.settings['md_output'] = bool(config.get('md_output'))
     media_main.settings['media_count_limit'] = int(config.get('media_count_limit') or 350)
 
     media_main._headers['cookie'] = cookie
-    media_main.has_retweet = bool(config.get('has_retweet'))
+    media_main.has_retweet = False
     media_main.has_highlights = bool(config.get('high_lights'))
-    media_main.has_likes = bool(config.get('likes'))
+    media_main.has_likes = False
     if media_main.has_likes:
         media_main.has_retweet = True
         media_main.has_highlights = False
@@ -108,7 +121,7 @@ def run_user_media(config, cookie, output_dir):
     media_main.log_output = True
     media_main.down_log = bool(config.get('down_log'))
     media_main.autoSync = bool(config.get('auto_sync'))
-    media_main.max_concurrent_requests = int(config.get('max_concurrent_requests') or 8)
+    media_main.max_concurrent_requests = safe_max_concurrent_requests(config.get('max_concurrent_requests'))
     media_main.proxies = proxy
     media_main.md_output = bool(config.get('md_output'))
     media_main.media_count_limit = int(config.get('media_count_limit') or 350)
@@ -119,6 +132,12 @@ def run_user_media(config, cookie, output_dir):
     media_main.backup_stamp = media_main.start_time_stamp
     media_main.request_count = 0
     media_main.down_count = 0
+    media_main.request_budget = None
+    if int(config.get('api_budget') or 0):
+        from crawler_runtime import RequestBudget
+
+        media_main.request_budget = RequestBudget(int(config.get('api_budget') or 0))
+        print(f'预计 API 调用预算: {media_main.request_budget.max_calls} 次', flush=True)
 
     started = time.time()
     for user in users:
@@ -139,7 +158,7 @@ def run_search(config, cookie, output_dir):
     tag_down.down_count = int(config.get('down_count') or 50)
     tag_down.media_latest = bool(config.get('media_latest'))
     tag_down.text_down = bool(config.get('text_down'))
-    tag_down.max_concurrent_requests = int(config.get('max_concurrent_requests') or 8)
+    tag_down.max_concurrent_requests = safe_max_concurrent_requests(config.get('max_concurrent_requests'))
 
     if tag_down.text_down:
         tag_down.entries_count = 20
@@ -198,7 +217,7 @@ def run_replies(config, cookie, output_dir):
     reply_down.target_user = targets
     reply_down.time_range = config.get('time_range') or ''
     reply_down.media_down = bool(config.get('media_down', True))
-    reply_down.max_concurrent_requests = int(config.get('max_concurrent_requests') or 8)
+    reply_down.max_concurrent_requests = safe_max_concurrent_requests(config.get('max_concurrent_requests'))
     reply_down.min_replies = int(config.get('min_replies') or 1)
     reply_down.min_faves = int(config.get('min_faves') or 0)
     reply_down.min_retweets = int(config.get('min_retweets') or 0)

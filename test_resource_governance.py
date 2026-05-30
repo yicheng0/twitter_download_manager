@@ -87,6 +87,37 @@ class ResourceGovernanceTest(unittest.TestCase):
         self.assertEqual(account['failure_count'], 1)
         self.assertEqual(proxy['failure_count'], 1)
 
+    def test_resource_result_uses_rate_limit_reset_marker(self):
+        reset_at = web_app.seconds_from_now(7200)
+        with web_app.db() as conn:
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at)
+                values (?, ?, ?, ?, ?, 'active', ?, ?)
+                ''',
+                ('account-reset', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'acctreset', web_app.now(), web_app.now()),
+            ).lastrowid
+
+        web_app.record_task_resource_result({'account_id': account_id}, 'rate_limited', 'rate_limited', reset_at)
+
+        with web_app.db() as conn:
+            account = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
+        self.assertEqual(account['cooldown_until'], reset_at)
+
+    def test_estimate_benchmark_api_budget(self):
+        config = {'task_type': 'benchmark_account', 'targets': 'one\ntwo', 'tweet_limit': 21}
+        self.assertEqual(web_app.estimate_api_budget(config), 6)
+
+    def test_parse_crawler_rate_limit_reset_marker(self):
+        reset_at = web_app.seconds_from_now(3600)
+        self.assertEqual(web_app.parse_crawler_rate_limit_reset(f'CRAWLER_RATE_LIMIT_RESET={reset_at}'), reset_at)
+
+    def test_budget_exhausted_is_classified_without_retry_error(self):
+        error_type, message = web_app.classify_failure('CRAWLER_ERROR_TYPE=budget_exhausted\nAPI 预算已用尽', 1)
+        self.assertEqual(error_type, 'budget_exhausted')
+        self.assertIn('预算', message)
+        self.assertFalse(web_app.should_retry_task(error_type))
+
     def test_release_reserved_resources_on_queued_cancel(self):
         with web_app.db() as conn:
             account_id = conn.execute(
@@ -153,6 +184,57 @@ class ResourceGovernanceTest(unittest.TestCase):
         self.assertIn('resource_policy', payload)
         self.assertEqual(payload['resource_policy']['account_new_task_limit_24h'], web_app.ACCOUNT_NEW_TASK_LIMIT_24H)
         self.assertEqual(payload['resource_policy']['proxy_min_interval_seconds'], web_app.PROXY_MIN_INTERVAL_SECONDS)
+        self.assertEqual(payload['resource_policy']['default_max_concurrent_requests'], web_app.DEFAULT_MAX_CONCURRENT_REQUESTS)
+        self.assertEqual(payload['resource_policy']['account_api_interval_seconds'], web_app.ACCOUNT_API_INTERVAL_SECONDS)
+
+    def test_health_check_skips_running_and_recently_checked_accounts(self):
+        with web_app.db() as conn:
+            running_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at)
+                values (?, ?, ?, ?, ?, 'active', ?)
+                ''',
+                ('running', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'running', web_app.now()),
+            ).lastrowid
+            recent_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at)
+                values (?, ?, ?, ?, ?, 'active', ?, ?)
+                ''',
+                ('recent', 'a2', 'c2', 'auth_token=a2; ct0=c2;', 'recent', web_app.now(), web_app.now()),
+            ).lastrowid
+            ready_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at)
+                values (?, ?, ?, ?, ?, 'active', ?)
+                ''',
+                ('ready', 'a3', 'c3', 'auth_token=a3; ct0=c3;', 'ready', web_app.now()),
+            ).lastrowid
+            conn.execute(
+                '''
+                insert into tasks (user_id, account_id, task_type, title, config_json, status, output_dir, log_path, created_at)
+                values (1, ?, 'benchmark_account', 'running task', '{}', 'running', ?, ?, ?)
+                ''',
+                (running_id, web_app.DATA_DIR.as_posix(), web_app.DATA_DIR.joinpath('running.log').as_posix(), web_app.now()),
+            )
+
+        checked = []
+        original = web_app.check_account_row
+        web_app.check_account_row = lambda account: checked.append(account['id'])
+        try:
+            web_app.run_health_check_once()
+        finally:
+            web_app.check_account_row = original
+
+        self.assertEqual(checked, [ready_id])
+
+    def test_concurrency_is_capped_for_account_safety(self):
+        self.assertEqual(web_app.safe_max_concurrent_requests(99), web_app.MAX_CONCURRENT_REQUESTS_CAP)
+        self.assertEqual(web_app.safe_max_concurrent_requests(''), web_app.DEFAULT_MAX_CONCURRENT_REQUESTS)
+
+    def test_rate_limited_tasks_do_not_retry_immediately(self):
+        self.assertFalse(web_app.should_retry_task('rate_limited'))
+        self.assertTrue(web_app.should_retry_task('network_failed'))
 
 
 if __name__ == '__main__':

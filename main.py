@@ -8,7 +8,7 @@ import json
 import sys
 
 sys.path.append('.')
-from crawler_runtime import AsyncCrawlerClient, CrawlerClient, classify_exception
+from crawler_runtime import AsyncCrawlerClient, CrawlerClient, CrawlerError, RequestBudget, classify_exception, media_download_retries, page_delay
 from user_info import User_info
 from csv_gen import csv_gen
 from md_gen import md_gen
@@ -128,26 +128,41 @@ _headers['cookie'] = settings['cookie']
 request_count = 0    #请求次数计数
 down_count = 0      #下载图片数计数
 crawler_client = None
+request_budget = None
 
 
 def active_crawler_client():
     global crawler_client
     if crawler_client is None:
-        crawler_client = CrawlerClient(cookie=settings['cookie'], proxy=settings.get('proxy') or '', headers=_headers)
+        crawler_client = CrawlerClient(cookie=settings['cookie'], proxy=settings.get('proxy') or '', headers=_headers, budget=request_budget)
     crawler_client.headers = dict(_headers)
     return crawler_client
 
 def get_other_info(_user_info):
     url = 'https://twitter.com/i/api/graphql/xc8f1g7BYqr6VTzTbvNlGw/UserByScreenName?variables={"screen_name":"' + _user_info.screen_name + '","withSafetyModeUserFields":false}&features={"hidden_profile_likes_enabled":false,"hidden_profile_subscriptions_enabled":false,"responsive_web_graphql_exclude_directive_enabled":true,"verified_phone_label_enabled":false,"subscriptions_verification_info_verified_since_enabled":true,"highlights_tweets_tab_ui_enabled":true,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true}&fieldToggles={"withAuxiliaryUserLabels":false}'
+    response = ''
     try:
         global request_count
-        response = active_crawler_client().get_text(url)
-        request_count += 1
+        response = active_crawler_client().get_text(
+            url,
+            cache_namespace='user_by_screen_name',
+            cache_key=_user_info.screen_name.lower(),
+            cache_ttl=int(os.environ.get('TW_CACHE_USER_TTL_SECONDS', '86400') or 86400),
+        )
+        request_count = request_budget.used if request_budget else request_count + 1
         raw_data = json.loads(response)
         _user_info.rest_id = raw_data['data']['user']['result']['rest_id']
         _user_info.name = raw_data['data']['user']['result']['legacy']['name']
         _user_info.statuses_count = raw_data['data']['user']['result']['legacy']['statuses_count']
         _user_info.media_count = raw_data['data']['user']['result']['legacy']['media_count']
+    except CrawlerError as e:
+        if e.error_type == 'budget_exhausted':
+            raise
+        print('获取信息失败')
+        print(f'CRAWLER_ERROR_TYPE={classify_exception(e)}')
+        print(e)
+        print(response)
+        return False
     except Exception as e:
         print('获取信息失败')
         print(f'CRAWLER_ERROR_TYPE={classify_exception(e)}')
@@ -281,10 +296,16 @@ def get_download_url(_user_info):
         url = url_top + '"cursor":"' + _user_info.cursor + '",' + url_bottom
     else:
         url = url_top + url_bottom      #第一页,无cursor
+    response = ''
     try:
         global request_count
-        response = active_crawler_client().get_text(url)
-        request_count += 1
+        response = active_crawler_client().get_text(
+            url,
+            cache_namespace='user_media_timeline',
+            cache_key=f'{_user_info.rest_id}:{_user_info.cursor or "first"}:{settings.get("time_range", "")}:{has_retweet}:{has_highlights}:{has_likes}',
+            cache_ttl=int(os.environ.get('TW_CACHE_TIMELINE_TTL_SECONDS', '900') or 900),
+        )
+        request_count = request_budget.used if request_budget else request_count + 1
         try:
             raw_data = json.loads(response)
         except Exception:
@@ -300,6 +321,7 @@ def get_download_url(_user_info):
             raw_data = raw_data['data']['user']['result']['timeline_v2']['timeline']['instructions'][-1]['entries']
         else:   #usermedia模式
             raw_data = raw_data['data']['user']['result']['timeline_v2']['timeline']['instructions']
+        page_delay()
         if (has_retweet or has_highlights) and 'cursor-top' in raw_data[0]['entryId']:      #含转推模式 所有推文已全部下载完成
             return False
         
@@ -326,6 +348,14 @@ def get_download_url(_user_info):
         
         if not photo_lst:
             photo_lst.append(True)
+    except CrawlerError as e:
+        if e.error_type == 'budget_exhausted':
+            raise
+        print('获取推文信息错误')
+        print(f'CRAWLER_ERROR_TYPE={classify_exception(e)}')
+        print(e)
+        print(response)
+        return False
     except Exception as e:
         print('获取推文信息错误')
         print(f'CRAWLER_ERROR_TYPE={classify_exception(e)}')
@@ -378,7 +408,7 @@ def download_control(_user_info):
                 except Exception as e:
                     if '.mp4' in url or orig_format or str(e) != "404":
                         count += 1
-                        if count >= 50:
+                        if count >= media_download_retries():
                             print(f'{_file_name}=====>第{count}次下载失败，已跳过该文件。')
                             print(url)
                             break
@@ -413,8 +443,15 @@ def main(_user_info: object):
     re_token = 'ct0=(.*?);'
     _headers['x-csrf-token'] = re.findall(re_token,_headers['cookie'])[0]
     _headers['referer'] = 'https://twitter.com/' + _user_info.screen_name
-    if not get_other_info(_user_info):
-        return False
+    try:
+        if not get_other_info(_user_info):
+            return False
+    except CrawlerError as exc:
+        if exc.error_type == 'budget_exhausted':
+            print('CRAWLER_ERROR_TYPE=budget_exhausted')
+            print(f'API 预算已用尽，跳过用户: {_user_info.screen_name}')
+            return False
+        raise
     print_info(_user_info)
     _path = settings['save_path'] + _user_info.screen_name
     if not os.path.exists(_path):   #创建文件夹
@@ -451,7 +488,13 @@ def main(_user_info: object):
         else:
             start_time_stamp = backup_stamp
 
-    download_control(_user_info)
+    try:
+        download_control(_user_info)
+    except CrawlerError as exc:
+        if exc.error_type != 'budget_exhausted':
+            raise
+        print('CRAWLER_ERROR_TYPE=budget_exhausted')
+        print(f'API 预算已用尽，已保留部分结果: {_user_info.save_path}')
 
     csv_file.csv_close()
     

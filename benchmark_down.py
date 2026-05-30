@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from crawler_runtime import AsyncCrawlerClient, CrawlerClient, CrawlerError, classify_exception
+from crawler_runtime import AsyncCrawlerClient, CrawlerClient, CrawlerError, RequestBudget, classify_exception, media_download_retries, page_delay
 from proxy_utils import proxy_for_httpx
 from url_utils import quote_url
 
@@ -128,25 +128,30 @@ class BenchmarkAccountDownloader:
         self.tweet_limit = int(config.get('tweet_limit') or 50)
         self.has_video = bool(config.get('has_video', True))
         self.has_retweet = bool(config.get('has_retweet'))
-        self.max_concurrent_requests = int(config.get('max_concurrent_requests') or 8)
+        self.max_concurrent_requests = int(config.get('max_concurrent_requests') or 3)
         self.time_range = config.get('time_range') or default_time_range()
         start, end = self.time_range.split(':', 1)
         self.start_time_stamp = time2stamp(start)
         self.end_time_stamp = time2stamp(end)
         self.request_count = 0
         self.download_count = 0
+        self.target_count = len([item for item in str(config.get('targets') or '').replace(',', '\n').splitlines() if parse_screen_name(item)])
+        self.api_budget_limit = int(config.get('api_budget') or (self.target_count * (1 + ((self.tweet_limit + 19) // 20))) or 0)
+        self.budget = RequestBudget(self.api_budget_limit)
+        self.cache_user_ttl = int(config.get('cache_user_ttl_seconds') or os.environ.get('TW_CACHE_USER_TTL_SECONDS', '86400') or 86400)
+        self.cache_timeline_ttl = int(config.get('cache_timeline_ttl_seconds') or os.environ.get('TW_CACHE_TIMELINE_TTL_SECONDS', '900') or 900)
         self.headers = {
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
             'authorization': AUTHORIZATION,
             'cookie': cookie,
             'x-csrf-token': re.findall(r'ct0=(.*?);', cookie)[0],
         }
-        self.client = CrawlerClient(cookie=cookie, proxy=self.proxy_value, account_key=cookie, headers=self.headers)
+        self.client = CrawlerClient(cookie=cookie, proxy=self.proxy_value, account_key=cookie, headers=self.headers, budget=self.budget)
 
     def get_user_info(self, screen_name):
         url = 'https://twitter.com/i/api/graphql/xc8f1g7BYqr6VTzTbvNlGw/UserByScreenName?variables={"screen_name":"' + screen_name + '","withSafetyModeUserFields":false}&features={"hidden_profile_likes_enabled":false,"hidden_profile_subscriptions_enabled":false,"responsive_web_graphql_exclude_directive_enabled":true,"verified_phone_label_enabled":false,"subscriptions_verification_info_verified_since_enabled":true,"highlights_tweets_tab_ui_enabled":true,"creator_subscriptions_tweet_preview_api_enabled":true,"responsive_web_graphql_skip_user_profile_image_extensions_enabled":false,"responsive_web_graphql_timeline_navigation_enabled":true}&fieldToggles={"withAuxiliaryUserLabels":false}'
-        response = self.client.get_text(url)
-        self.request_count += 1
+        response = self.client.get_text(url, cache_namespace='user_by_screen_name', cache_key=screen_name.lower(), cache_ttl=self.cache_user_ttl)
+        self.request_count = self.budget.used
         raw_data = json.loads(response)
         result = raw_data['data']['user']['result']
         legacy = result['legacy']
@@ -261,7 +266,7 @@ class BenchmarkAccountDownloader:
                     return
                 except Exception as exc:
                     attempts += 1
-                    if attempts >= 10:
+                    if attempts >= media_download_retries():
                         print(f'{file_path} 下载失败，已跳过: {exc}', flush=True)
                         return
                     print(f'{file_path} 第{attempts}次下载失败，正在重试: {classify_exception(exc)}', flush=True)
@@ -323,6 +328,8 @@ class BenchmarkAccountDownloader:
         folder_path = os.path.join(self.output_dir, del_special_char(user['screen_name']))
         os.makedirs(folder_path, exist_ok=True)
         print(f'开始对标账号采集: @{user["screen_name"]}，最多 {self.tweet_limit} 条推文', flush=True)
+        if self.api_budget_limit:
+            print(f'预计 API 调用预算: {self.api_budget_limit} 次，已用 {self.request_count} 次', flush=True)
 
         csv_file = BenchmarkCsv(folder_path, user['name'], user['screen_name'], self.time_range)
         cursor = ''
@@ -332,9 +339,10 @@ class BenchmarkAccountDownloader:
         try:
             while saved_tweets < self.tweet_limit:
                 url = self.tweet_url(user['rest_id'], cursor)
-                response = self.client.get_text(url)
-                self.request_count += 1
+                response = self.client.get_text(url, cache_namespace='benchmark_timeline', cache_key=f'{user["rest_id"]}:{cursor or "first"}:{self.time_range}:{self.has_retweet}', cache_ttl=self.cache_timeline_ttl)
+                self.request_count = self.budget.used
                 raw_data = json.loads(response)
+                page_delay()
                 entries, next_cursor = self.extract_entries(raw_data, cursor)
                 if not entries or next_cursor == cursor:
                     break
@@ -359,12 +367,17 @@ class BenchmarkAccountDownloader:
                 cursor = next_cursor
                 if stop_for_time:
                     break
+        except CrawlerError as exc:
+            if exc.error_type != 'budget_exhausted':
+                raise
+            print(f'CRAWLER_ERROR_TYPE=budget_exhausted', flush=True)
+            print(f'API 预算已用尽，已保留部分结果: {saved_tweets} 条推文，{len(all_media_jobs)} 个媒体任务', flush=True)
         finally:
             csv_file.csv_close()
 
         if all_media_jobs:
             asyncio.run(self.download_media(all_media_jobs))
-        print(f'@{user["screen_name"]} 采集完成: {saved_tweets} 条推文，{len(all_media_jobs)} 个媒体任务', flush=True)
+        print(f'@{user["screen_name"]} 采集完成: {saved_tweets} 条推文，{len(all_media_jobs)} 个媒体任务，API 已用 {self.request_count} 次', flush=True)
 
     def run(self):
         targets = [parse_screen_name(item) for item in str(self.config.get('targets') or '').replace(',', '\n').splitlines()]
@@ -372,6 +385,7 @@ class BenchmarkAccountDownloader:
         if not users:
             raise RuntimeError('At least one benchmark account URL or user name is required.')
         started = time.time()
+        print(f'降载模式: API 预算 {self.api_budget_limit or "不限"} 次，用户缓存 {self.cache_user_ttl} 秒，时间线缓存 {self.cache_timeline_ttl} 秒', flush=True)
         for user in users:
             self.run_user(user)
         print(f'对标账号任务完成, 耗时 {time.time() - started:.2f} 秒, API 调用 {self.request_count} 次, 下载 {self.download_count} 份文件', flush=True)

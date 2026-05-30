@@ -1,10 +1,13 @@
 import asyncio
 import contextlib
+import hashlib
+import json
 import os
 import re
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
@@ -19,10 +22,12 @@ DEFAULT_TIMEOUT = (3.05, 16)
 
 
 class CrawlerError(RuntimeError):
-    def __init__(self, error_type, message, status_code=None):
+    def __init__(self, error_type, message, status_code=None, rate_limit_reset=None, rate_limit_remaining=None):
         super().__init__(message)
         self.error_type = error_type
         self.status_code = status_code
+        self.rate_limit_reset = rate_limit_reset
+        self.rate_limit_remaining = rate_limit_remaining
 
 
 def classify_response(status_code, text=''):
@@ -42,6 +47,8 @@ def classify_exception(exc):
     if isinstance(exc, CrawlerError):
         return exc.error_type
     text = str(exc).lower()
+    if 'budget' in text or '预算' in str(exc):
+        return 'budget_exhausted'
     if any(term in text for term in ['401', '403', 'auth', 'cookie', 'ct0']):
         return 'auth_expired'
     if '429' in text or 'rate limit' in text or 'api次数已超限' in str(exc):
@@ -53,14 +60,55 @@ def classify_exception(exc):
     return 'failed'
 
 
+def parse_rate_limit_headers(headers):
+    headers = headers or {}
+    remaining = None
+    reset = None
+    try:
+        remaining_value = headers.get('x-rate-limit-remaining') or headers.get('X-Rate-Limit-Remaining')
+        if remaining_value is not None:
+            remaining = int(remaining_value)
+    except (TypeError, ValueError):
+        remaining = None
+    try:
+        reset_value = headers.get('x-rate-limit-reset') or headers.get('X-Rate-Limit-Reset')
+        if reset_value is not None:
+            reset = int(float(reset_value))
+    except (TypeError, ValueError):
+        reset = None
+    return {'remaining': remaining, 'reset': reset}
+
+
+def format_reset_marker(reset_epoch):
+    try:
+        return datetime.fromtimestamp(int(reset_epoch)).strftime('%Y-%m-%d %H:%M:%S')
+    except Exception:
+        return ''
+
+
+def emit_rate_limit_marker(info):
+    if os.environ.get('TW_CRAWLER_EMIT_LIMIT_MARKERS', '1').lower() in {'0', 'false', 'no', 'off'}:
+        return
+    reset = info.get('reset')
+    remaining = info.get('remaining')
+    if reset:
+        marker = format_reset_marker(reset)
+        if marker:
+            print(f'CRAWLER_RATE_LIMIT_REMAINING={remaining if remaining is not None else ""} CRAWLER_RATE_LIMIT_RESET={marker}', flush=True)
+
+
 def raise_for_crawler_response(response):
+    rate_limit = parse_rate_limit_headers(response.headers)
     if response.status_code < 400:
         text = response.text
         if 'Rate limit exceeded' in text or 'API次数已超限' in text:
-            raise CrawlerError('rate_limited', 'Rate limit exceeded', response.status_code)
+            emit_rate_limit_marker(rate_limit)
+            raise CrawlerError('rate_limited', 'Rate limit exceeded', response.status_code, rate_limit.get('reset'), rate_limit.get('remaining'))
         return
     error_type = classify_response(response.status_code, response.text[:500])
-    raise CrawlerError(error_type, f'HTTP {response.status_code}: {response.text[:200]}', response.status_code)
+    if error_type == 'rate_limited':
+        emit_rate_limit_marker(rate_limit)
+    raise CrawlerError(error_type, f'HTTP {response.status_code}: {response.text[:200]}', response.status_code, rate_limit.get('reset'), rate_limit.get('remaining'))
 
 
 def ct0_from_cookie(cookie):
@@ -87,21 +135,90 @@ def resource_key(value):
 
 @dataclass
 class RuntimeLimits:
-    account_api_interval: float = 2.0
-    proxy_api_interval: float = 0.5
+    account_api_interval: float = 15.0
+    proxy_api_interval: float = 3.0
     media_download_interval: float = 0.0
-    max_retries: int = 3
+    max_retries: int = 1
     backoff_base: float = 1.0
 
     @classmethod
     def from_env(cls):
         return cls(
-            account_api_interval=float(os.environ.get('TW_ACCOUNT_API_INTERVAL_SECONDS', '2') or 2),
-            proxy_api_interval=float(os.environ.get('TW_PROXY_API_INTERVAL_SECONDS', '0.5') or 0.5),
+            account_api_interval=float(os.environ.get('TW_ACCOUNT_API_INTERVAL_SECONDS', '15') or 15),
+            proxy_api_interval=float(os.environ.get('TW_PROXY_API_INTERVAL_SECONDS', '3') or 3),
             media_download_interval=float(os.environ.get('TW_MEDIA_DOWNLOAD_INTERVAL_SECONDS', '0') or 0),
-            max_retries=max(1, int(os.environ.get('TW_CRAWLER_REQUEST_RETRIES', '3') or 3)),
+            max_retries=max(1, int(os.environ.get('TW_CRAWLER_REQUEST_RETRIES', '1') or 1)),
             backoff_base=max(0.1, float(os.environ.get('TW_CRAWLER_BACKOFF_BASE_SECONDS', '1') or 1)),
         )
+
+
+def page_delay():
+    delay = max(0.0, float(os.environ.get('TW_CRAWLER_PAGE_DELAY_SECONDS', '6') or 0))
+    if delay:
+        time.sleep(delay)
+
+
+async def async_page_delay():
+    delay = max(0.0, float(os.environ.get('TW_CRAWLER_PAGE_DELAY_SECONDS', '6') or 0))
+    if delay:
+        await asyncio.sleep(delay)
+
+
+def media_download_retries():
+    return max(1, int(os.environ.get('TW_MEDIA_DOWNLOAD_RETRIES', '5') or 5))
+
+
+class RequestBudget:
+    def __init__(self, max_calls=0):
+        self.max_calls = max(0, int(max_calls or 0))
+        self.used = 0
+        self._lock = threading.Lock()
+
+    def reserve(self):
+        with self._lock:
+            if self.max_calls and self.used >= self.max_calls:
+                raise CrawlerError('budget_exhausted', f'API request budget exhausted ({self.used}/{self.max_calls})')
+            self.used += 1
+            return self.used
+
+    @property
+    def remaining(self):
+        if not self.max_calls:
+            return None
+        return max(0, self.max_calls - self.used)
+
+
+class ResponseCache:
+    def __init__(self, base_dir=None):
+        self.base_dir = Path(base_dir or os.environ.get('TW_CRAWLER_CACHE_DIR') or Path.cwd() / 'web_data' / 'response_cache')
+
+    def _path(self, namespace, key):
+        safe_namespace = re.sub(r'[^A-Za-z0-9_.-]+', '_', str(namespace or 'default'))[:80] or 'default'
+        digest = hashlib.sha256(str(key or '').encode('utf-8')).hexdigest()
+        return self.base_dir / safe_namespace / f'{digest}.json'
+
+    def get(self, namespace, key, ttl_seconds):
+        if not ttl_seconds:
+            return None
+        path = self._path(namespace, key)
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                payload = json.load(f)
+            created_at = float(payload.get('created_at') or 0)
+            if time.time() - created_at > ttl_seconds:
+                return None
+            return payload.get('text')
+        except Exception:
+            return None
+
+    def set(self, namespace, key, text):
+        path = self._path(namespace, key)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump({'created_at': time.time(), 'text': text}, f, ensure_ascii=False)
+        except Exception:
+            pass
 
 
 class FileThrottle:
@@ -183,7 +300,7 @@ def cross_process_lock(path):
 
 
 class CrawlerClient:
-    def __init__(self, cookie='', proxy='', account_key='', throttle=None, headers=None):
+    def __init__(self, cookie='', proxy='', account_key='', throttle=None, headers=None, budget=None, cache=None):
         self.cookie = cookie
         self.proxy = proxy_for_httpx(proxy)
         self.account_key = account_key or cookie
@@ -191,12 +308,23 @@ class CrawlerClient:
         self.throttle = throttle or FileThrottle()
         self.headers = dict(headers or standard_headers(cookie))
         self.limits = RuntimeLimits.from_env()
+        self.budget = budget
+        self.cache = cache or ResponseCache()
 
-    def get_text(self, url, headers=None, timeout=DEFAULT_TIMEOUT, quote=True):
+    def get_text(self, url, headers=None, timeout=DEFAULT_TIMEOUT, quote=True, cache_namespace='', cache_key='', cache_ttl=0):
+        if cache_ttl:
+            cached = self.cache.get(cache_namespace or 'http_text', cache_key or url, cache_ttl)
+            if cached is not None:
+                print(f'CRAWLER_CACHE_HIT={cache_namespace or "http_text"}', flush=True)
+                return cached
         request_headers = dict(self.headers)
         if headers:
             request_headers.update(headers)
-        return self._request_with_retries(url, request_headers, timeout, quote).text
+        response = self._request_with_retries(url, request_headers, timeout, quote)
+        text = response.text
+        if cache_ttl:
+            self.cache.set(cache_namespace or 'http_text', cache_key or url, text)
+        return text
 
     def get_bytes(self, url, headers=None, timeout=DEFAULT_TIMEOUT, quote=True):
         request_headers = dict(self.headers)
@@ -215,7 +343,10 @@ class CrawlerClient:
         for attempt in range(1, self.limits.max_retries + 1):
             try:
                 self.throttle.wait(self.account_key if not media else '', self.proxy_key if not media else '', self.proxy_key or self.account_key if media else '')
+                if self.budget and not media:
+                    self.budget.reserve()
                 response = httpx.get(quote_url(url) if should_quote else url, headers=headers, proxy=self.proxy, timeout=timeout)
+                self._maybe_emit_low_remaining(response)
                 raise_for_crawler_response(response)
                 return response
             except Exception as exc:
@@ -227,6 +358,17 @@ class CrawlerClient:
                     raise CrawlerError(error_type, str(exc)) from exc
                 time.sleep(self.limits.backoff_base * attempt)
         raise CrawlerError(classify_exception(last_error), str(last_error))
+
+    def _maybe_emit_low_remaining(self, response):
+        info = parse_rate_limit_headers(response.headers)
+        remaining = info.get('remaining')
+        reset = info.get('reset')
+        try:
+            threshold = int(os.environ.get('TW_RATE_LIMIT_LOW_REMAINING', '1') or 1)
+        except ValueError:
+            threshold = 1
+        if reset and remaining is not None and remaining <= threshold:
+            emit_rate_limit_marker(info)
 
 
 class AsyncCrawlerClient:
@@ -253,6 +395,7 @@ class AsyncCrawlerClient:
             try:
                 await self.throttle.async_wait(self.account_key if not media else '', self.proxy_key if not media else '', self.proxy_key or self.account_key if media else '')
                 response = await self.client.get(quote_url(url) if quote else url, headers=request_headers, timeout=timeout)
+                self._maybe_emit_low_remaining(response)
                 raise_for_crawler_response(response)
                 return response
             except Exception as exc:
@@ -264,3 +407,14 @@ class AsyncCrawlerClient:
                     raise CrawlerError(error_type, str(exc)) from exc
                 await asyncio.sleep(self.limits.backoff_base * attempt)
         raise CrawlerError(classify_exception(last_error), str(last_error))
+
+    def _maybe_emit_low_remaining(self, response):
+        info = parse_rate_limit_headers(response.headers)
+        remaining = info.get('remaining')
+        reset = info.get('reset')
+        try:
+            threshold = int(os.environ.get('TW_RATE_LIMIT_LOW_REMAINING', '1') or 1)
+        except ValueError:
+            threshold = 1
+        if reset and remaining is not None and remaining <= threshold:
+            emit_rate_limit_marker(info)
