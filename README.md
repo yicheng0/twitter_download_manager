@@ -1,12 +1,12 @@
 # X/Twitter Download Manager
 
-面向 X/Twitter 内容备份与任务管理的本地工具集。项目提供传统脚本、轻量本地面板和完整 Web 管理端，支持按用户、关键词、高级搜索条件和评论区任务采集媒体与文本内容，并提供账号、代理、任务日志和结果汇总能力。
+面向 X/Twitter 内容备份与任务管理的本地工具集。项目提供传统脚本、轻量本地面板和完整 Web 管理端，支持按用户、关键词、高级搜索条件、评论区和主页资料任务采集媒体与文本内容，并提供账号治理、代理池、任务队列、实时日志、结果卡片、热力图和结果汇总能力。
 
 > 本项目仅用于学习研究、个人资料备份和授权场景下的数据整理。使用者需要自行遵守所在地区法律法规、X/Twitter 平台规则、内容版权和隐私要求。
 
 ## English Summary
 
-X/Twitter Download Manager is a local toolkit for media download, task management, and authorized content archiving. It includes Python scripts, a lightweight local panel, a full Web console, Docker deployment files, account/session management, proxy configuration, task logs, and result reports.
+X/Twitter Download Manager is a local toolkit for media download, task management, and authorized content archiving. It includes Python scripts, a lightweight local panel, a full Web console, Docker deployment files, account/session management, proxy pools, task queues, live logs, result cards, heatmaps, and report exports.
 
 Use it only for lawful research, personal backup, or authorized internal workflows. The project does not provide any guarantee for bypassing platform limits, access controls, copyright restrictions, or account risk.
 
@@ -19,8 +19,10 @@ Use it only for lawful research, personal backup, or authorized internal workflo
 - Download replies for supported users or tweet links.
 - Fetch profile information, including avatar, banner and bio.
 - Generate Markdown records, CSV statistics and task summary reports.
-- Manage tasks through a browser-based Web console with live logs.
-- Manage account sessions and proxy settings from the Web console.
+- Manage tasks through a browser-based Web console with templates, live logs, retries, packaged downloads and X-style result cards.
+- Manage account sessions, local browser authorization, BitBrowser imports, account warmup and proxy binding from the Web console.
+- Store indexed results locally, or sync task outputs to an external PostgreSQL/MySQL result database for dashboards and heatmaps.
+- Automatically choose media download concurrency for Web and panel tasks based on task size and account risk.
 - Deploy locally, on a private server, or through Docker Compose with optional Caddy HTTPS reverse proxy.
 
 ## Requirements
@@ -46,7 +48,7 @@ python -m playwright install
 
 ### Full Web Console
 
-The full Web console is the recommended entry point for account management, proxy pools, task queues, runtime control, logs, reports and packaged downloads.
+The full Web console is the recommended entry point for account management, proxy pools, task queues, runtime control, logs, results, reports and packaged downloads.
 
 Build the frontend after the first checkout or after frontend changes:
 
@@ -69,7 +71,7 @@ Open:
 http://127.0.0.1:8000
 ```
 
-The console provides task templates, recent task history, output statistics and generated `summary_report.md` files after task completion.
+The console provides task templates, recent task history, task detail pages, live logs, indexed result cards, output statistics and generated `summary_report.md` files after task completion. Finished tasks can be downloaded as a package containing CSV, Markdown, media files and reports.
 
 ### Lightweight Local Panel
 
@@ -96,6 +98,28 @@ python main.py
 ```
 
 The script reads `settings.json`. At minimum, configure `user_lst` and `cookie` before running.
+
+## Web Console Workflow
+
+The Web console is designed for repeated operational use:
+
+1. Add or authorize one or more X/Twitter accounts.
+2. Add proxies when your workflow requires them, or bind a stable proxy to a specific account.
+3. Create a task from a template: account timeline, focused account archive, keyword/search watch, replies, text-only export or profile archive.
+4. Watch live logs and progress while the background worker runs.
+5. Review indexed results in the task detail page, including tweet text, author metadata, metrics and media links.
+6. Download the packaged output when the task completes.
+
+Task detail pages index CSV/Markdown/media outputs back into SQLite so the UI can show X-style result cards and filters even after the original crawler process exits. The dashboard also exposes recent activity, task status counts and a heatmap of indexed records. If an external result database is enabled, dashboard heatmaps can use that external source; task queue state and account state still remain in the local SQLite database.
+
+## Result Database
+
+By default, all task metadata and indexed results are stored locally under the configured Web data directory. The Web console can also connect to PostgreSQL or MySQL as an external result database for downstream analysis.
+
+- External result databases are optional.
+- Saved credentials are encrypted when `TW_CREDENTIAL_KEY` is configured.
+- Connection tests can validate new or saved configurations before enabling sync.
+- External storage is for collected result data; it does not replace the local task queue, account store or proxy store.
 
 ## Web Console Accounts
 
@@ -146,6 +170,18 @@ http://127.0.0.1:54345
 ```
 
 Then enter the local API address and the browser profile ID in the account page. Multiple profile IDs can be separated by new lines or English commas. To reduce operational risk, each import is limited to 10 profiles.
+
+### Account Governance
+
+The Web console tracks account status, recent usage, estimated capacity, cooldowns and health-check results. New accounts are treated conservatively. Stable accounts can receive more work after repeated healthy checks.
+
+Account warmup in this project means safety checks only: Cookie validity, proxy availability, quota/cooldown state and health scoring. It does not perform automatic likes, follows, replies, reposts or other engagement behavior. A warmup run can be started for one account or as a batch for new/low-score accounts. After repeated successful checks, an account can move into the stable tier.
+
+When adaptive throttling is enabled, task creation may automatically reduce task size, disable risky expansion options or lower media concurrency for watch/risky accounts. The task detail page shows the applied changes when a task has been automatically adjusted.
+
+### Proxy Pools and Binding
+
+Proxy entries can be managed from the Web console and are checked for availability. A proxy may be cooled down after network or rate-limit failures. Accounts can optionally bind to a preferred proxy; when a task does not specify a proxy manually, the worker prefers the bound proxy and falls back to automatic proxy selection if the bound proxy is unavailable.
 
 ## Docker Deployment
 
@@ -215,14 +251,14 @@ Before enabling Caddy, confirm that host ports `80` and `443` are available, and
 
 | Script | Purpose |
 | --- | --- |
-| `backend/` | Backend package containing Web, panel, crawler, shared utilities and tools. |
-| `web_app.py` | Compatibility entrypoint for `backend.web.app`. |
-| `panel_app.py` | Compatibility entrypoint for `backend.panel.app`. |
-| `main.py` | Compatibility entrypoint for `backend.crawler.main`; downloads media by username according to `settings.json`. |
-| `tag_down.py` | Compatibility entrypoint for `backend.crawler.tag_down`; downloads by tag, keyword or advanced search query. |
-| `text_down.py` | Compatibility entrypoint for `backend.crawler.text_down`; exports text-only tweets. |
-| `reply_down.py` | Compatibility entrypoint for `backend.crawler.reply_down`; downloads reply content. |
-| `profile_down.py` | Compatibility entrypoint for `backend.crawler.profile_down`; fetches profile information. |
+| `web_app.py` | Full Web console backend and task worker entrypoint. |
+| `panel_app.py` | Lightweight local panel backend. |
+| `main.py` | Traditional media downloader by username according to `settings.json`. |
+| `tag_down.py` | Downloads by tag, keyword or advanced search query. |
+| `text_down.py` | Exports text-only tweets. |
+| `reply_down.py` | Downloads reply content. |
+| `profile_down.py` | Fetches profile information. |
+| `web_runner.py` | Internal runner used by queued Web tasks. |
 
 ## Advanced Search
 
@@ -293,7 +329,9 @@ Resource governance defaults:
 | `TW_MAX_CONCURRENT_REQUESTS_CAP` | `16` | Backend cap for task concurrency values. |
 | `TW_ACCOUNT_HEALTH_MIN_INTERVAL_SECONDS` | `1800` | Minimum interval between account health checks. |
 
-Scheduled tasks can use a fixed account or `account_id = 0` for automatic account assignment. Automatic assignment reuses the same resource governance and atomic reservation path as manually created tasks.
+Web and panel tasks select media concurrency automatically. The conservative baseline is low, large healthy tasks may increase slightly, and watch/risky accounts are capped down by adaptive throttling. `TW_DEFAULT_MAX_CONCURRENT_REQUESTS` and `TW_MAX_CONCURRENT_REQUESTS_CAP` remain as backend compatibility and safety values, especially for traditional scripts and old task payloads.
+
+Scheduled tasks can use a fixed account or `account_id = 0` for automatic account assignment. Automatic assignment reuses the same resource governance and atomic reservation path as manually created tasks. Scheduled account tasks can also enable new-content monitoring: the first run records a baseline, and later checks create collection tasks only when newer content is detected.
 
 ## FAQ
 
