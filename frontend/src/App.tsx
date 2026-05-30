@@ -342,6 +342,7 @@ function accountBoundProxySummary(account: Account) {
   return `${label} · 不可用将回退`;
 }
 
+
 function proxyStatusDescription(proxy: ProxyItem) {
   if (!proxy.enabled) return '当前代理不会参与运行。';
   if (proxy.status === 'check_failed') return '探测失败，系统会继续心跳检测，恢复后自动参与任务。';
@@ -2698,7 +2699,6 @@ function SchedulesPage() {
   const [error, setError] = useState('');
   const [bulkBloggersText, setBulkBloggersText] = useState('');
   const [bulkImportMessage, setBulkImportMessage] = useState('');
-  const scheduleSelectClass = 'h-10 w-full rounded-full border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-4 text-sm text-[hsl(var(--text))] outline-none transition-all duration-200 ease-out focus:border-[hsl(var(--primary))] focus:ring-2 focus:ring-[rgba(14,165,233,0.22)] focus:ring-offset-1 focus:ring-offset-[hsl(var(--bg))]';
   const saveSchedule = useMutation({
     mutationFn: () => editingId ? api.updateSchedule(editingId, form) : api.createSchedule(form),
     onSuccess: () => {
@@ -2785,16 +2785,27 @@ function SchedulesPage() {
           <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr))]">
             <Field label="计划名称"><Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} /></Field>
             <Field label="X账号">
-              <select className={scheduleSelectClass} value={form.account_id} onChange={(e) => setForm((prev) => ({ ...prev, account_id: Number(e.target.value) }))}>
-                <option value={0}>自动分配可用账号</option>
-                {usableAccounts.map((account) => <option key={account.id} value={account.id}>{account.label}{account.screen_name ? ` (@${account.screen_name})` : ''}{account.capacity ? ` · ${account.capacity.score}分 · API余${account.capacity.api_remaining_estimate}` : ''}</option>)}
-              </select>
+              <SelectMenu
+                value={String(form.account_id)}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, account_id: Number(value) }))}
+                options={[
+                  { value: '0', label: '自动分配可用账号' },
+                  ...usableAccounts.map((account) => ({
+                    value: String(account.id),
+                    label: `${account.label}${account.screen_name ? ` (@${account.screen_name})` : ''}${account.capacity ? ` · ${account.capacity.score}分 · API余${account.capacity.api_remaining_estimate}` : ''}`,
+                  })),
+                ]}
+              />
             </Field>
             <Field label="采集类型">
-              <select className={scheduleSelectClass} value={form.task_type} onChange={(e) => setForm((prev) => ({ ...prev, task_type: e.target.value as ScheduleFormValues['task_type'] }))}>
-                <option value="benchmark_account">账号近况</option>
-                <option value="user_media">用户媒体</option>
-              </select>
+              <SelectMenu
+                value={form.task_type}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, task_type: value as ScheduleFormValues['task_type'] }))}
+                options={[
+                  { value: 'benchmark_account', label: '账号近况' },
+                  { value: 'user_media', label: '用户媒体' },
+                ]}
+              />
             </Field>
           </div>
           <Field label="目标博主 / 博主列表">
@@ -2820,10 +2831,14 @@ function SchedulesPage() {
           </div>
           <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr))]">
             <Field label="执行周期">
-              <select className={scheduleSelectClass} value={form.schedule_type} onChange={(e) => setForm((prev) => ({ ...prev, schedule_type: e.target.value as ScheduleFormValues['schedule_type'] }))}>
-                <option value="daily">每日</option>
-                <option value="weekly">每周</option>
-              </select>
+              <SelectMenu
+                value={form.schedule_type}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, schedule_type: value as ScheduleFormValues['schedule_type'] }))}
+                options={[
+                  { value: 'daily', label: '每日' },
+                  { value: 'weekly', label: '每周' },
+                ]}
+              />
             </Field>
             <Field label="执行时间"><Input type="time" value={form.run_time} onChange={(e) => setForm((prev) => ({ ...prev, run_time: e.target.value }))} /></Field>
             <Field label="采集条数"><Input type="number" min={1} value={form.tweet_limit} onChange={(e) => setForm((prev) => ({ ...prev, tweet_limit: Number(e.target.value) }))} /></Field>
@@ -2851,10 +2866,14 @@ function SchedulesPage() {
           )}
           <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,360px),1fr))]">
             <Field label="代理池">
-              <select className={scheduleSelectClass} value={form.proxy_id ?? ''} onChange={(e) => setForm((prev) => ({ ...prev, proxy_id: e.target.value ? Number(e.target.value) : null }))}>
-                <option value="">不使用代理池</option>
-                {usableProxies.map((proxy) => <option key={proxy.id} value={proxy.id}>{proxy.label}</option>)}
-              </select>
+              <SelectMenu
+                value={form.proxy_id ? String(form.proxy_id) : ''}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, proxy_id: value ? Number(value) : null }))}
+                options={[
+                  { value: '', label: '不使用代理池' },
+                  ...usableProxies.map((proxy) => ({ value: String(proxy.id), label: proxy.label })),
+                ]}
+              />
             </Field>
             <Field label="时间范围"><Input value={form.time_range} onChange={(e) => setForm((prev) => ({ ...prev, time_range: e.target.value }))} /></Field>
           </div>
@@ -3003,12 +3022,17 @@ function OperationLogsPage() {
       {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
       {message && <div className="rounded-lg border border-[hsl(var(--success))] bg-[rgba(34,197,94,0.12)] px-3 py-2 text-sm text-[hsl(var(--success))]">{message}</div>}
       <ActionBar>
-        <select className="h-10 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3 text-sm" value={level} onChange={(e) => setLevel(e.target.value)}>
-          <option value="">全部级别</option>
-          <option value="info">信息</option>
-          <option value="warning">警告</option>
-          <option value="error">错误</option>
-        </select>
+        <SelectMenu
+          value={level}
+          onValueChange={(value) => setLevel(value)}
+          triggerClassName="w-[132px]"
+          options={[
+            { value: '', label: '全部级别' },
+            { value: 'info', label: '信息' },
+            { value: 'warning', label: '警告' },
+            { value: 'error', label: '错误' },
+          ]}
+        />
         <Input className="w-40" placeholder="事件类型" value={eventType} onChange={(e) => { setEventType(e.target.value); resetPage(); }} />
         <Input className="w-40" placeholder="错误类型" value={errorType} onChange={(e) => { setErrorType(e.target.value); resetPage(); }} />
         <Input className="w-48" placeholder="关键词" value={query} onChange={(e) => { setQuery(e.target.value); resetPage(); }} />
@@ -3131,10 +3155,14 @@ function ResultDbPage() {
           <div className="grid gap-3 md:grid-cols-3">
             <Field label="名称"><Input value={form.label} onChange={(e) => setForm((prev) => ({ ...prev, label: e.target.value }))} /></Field>
             <Field label="类型">
-              <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.db_type} onChange={(e) => updateDbType(e.target.value as ResultDbFormValues['db_type'])}>
-                <option value="postgresql">PostgreSQL</option>
-                <option value="mysql">MySQL</option>
-              </select>
+              <SelectMenu
+                value={form.db_type}
+                onValueChange={(value) => updateDbType(value as ResultDbFormValues['db_type'])}
+                options={[
+                  { value: 'postgresql', label: 'PostgreSQL' },
+                  { value: 'mysql', label: 'MySQL' },
+                ]}
+              />
             </Field>
             <Field label="端口"><Input type="number" value={form.port} onChange={(e) => setForm((prev) => ({ ...prev, port: Number(e.target.value) }))} /></Field>
           </div>
@@ -3198,9 +3226,11 @@ function AccountsPage() {
   const queryClient = useQueryClient();
   const { data } = useQuery({ queryKey: ['accounts'], queryFn: () => api.accounts(), refetchInterval: 8000 });
   const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies(), refetchInterval: 8000 });
+
   const accounts = data?.accounts || [];
   const proxies = proxiesData?.proxies || [];
   const proxyOptions = proxies.filter((proxy) => proxy.enabled);
+
   const capacityAccounts = accounts.filter((account) => account.capacity);
   const averageCapacity = capacityAccounts.length
     ? Math.round(capacityAccounts.reduce((sum, account) => sum + (account.capacity?.score || 0), 0) / capacityAccounts.length)
@@ -3433,6 +3463,7 @@ function AccountsPage() {
     },
     onError: (err: Error) => setError(err.message),
   });
+
   const deleteAccount = useMutation({
     mutationFn: (id: number) => api.deleteAccount(id),
     onSuccess: () => {
@@ -3492,6 +3523,7 @@ function AccountsPage() {
   const completedQueueCount = loginQueueItems.filter((item) => item.status === 'completed').length;
   const failedQueueCount = loginQueueItems.filter((item) => ['failed', 'expired', 'cancelled'].includes(item.status)).length;
 
+
   const retryLocalHelper = async () => {
     if (!browserLoginToken || !browserLoginCallbackUrl) {
       browserLogin.mutate();
@@ -3534,18 +3566,18 @@ function AccountsPage() {
           placeholder="登录账号备注"
           maxLength={80}
         />
-        <select
-          className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3 text-sm sm:w-[260px]"
-          value={browserLoginProxyId ?? ''}
-          onChange={(event) => setBrowserLoginProxyId(event.target.value ? Number(event.target.value) : null)}
-        >
-          <option value="">授权后不绑定代理</option>
-          {proxyOptions.map((proxy) => (
-            <option key={proxy.id} value={proxy.id}>
-              {proxy.label} · {proxy.detected_ip || proxyStatusLabel(proxy)}
-            </option>
-          ))}
-        </select>
+        <SelectMenu
+          value={browserLoginProxyId ? String(browserLoginProxyId) : ''}
+          onValueChange={(value) => setBrowserLoginProxyId(value ? Number(value) : null)}
+          triggerClassName="w-full sm:w-[260px]"
+          options={[
+            { value: '', label: '授权后不绑定代理' },
+            ...proxyOptions.map((proxy) => ({
+              value: String(proxy.id),
+              label: `${proxy.label} · ${proxy.detected_ip || proxyStatusLabel(proxy)}`,
+            })),
+          ]}
+        />
         <Button onClick={startOneClickLocalLogin} disabled={browserLogin.isPending || browserLoginStatus === 'running' || browserLoginStatus === 'helper_starting'}>
           <CircleUserRound className="h-4 w-4" />
           开始本地授权
@@ -3783,9 +3815,11 @@ function AccountsPage() {
             <Badge tone="primary">健康保护</Badge>
             <Badge tone="warning">新号低频</Badge>
             <Badge tone="neutral">无自动互动</Badge>
+
           </div>
         </CardContent>
       </Card>
+
 
       <Card>
         <CardHeader>
@@ -3899,18 +3933,18 @@ function AccountsPage() {
                                 className="h-8"
                                 maxLength={80}
                               />
-                              <select
-                                className="h-8 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-2 text-xs"
-                                value={editingAccountProxyId ?? ''}
-                                onChange={(event) => setEditingAccountProxyId(event.target.value ? Number(event.target.value) : null)}
-                              >
-                                <option value="">不绑定代理</option>
-                                {proxyOptions.map((proxy) => (
-                                  <option key={proxy.id} value={proxy.id}>
-                                    {proxy.label} · {proxy.detected_ip || proxyStatusLabel(proxy)}
-                                  </option>
-                                ))}
-                              </select>
+                              <SelectMenu
+                                value={editingAccountProxyId ? String(editingAccountProxyId) : ''}
+                                onValueChange={(value) => setEditingAccountProxyId(value ? Number(value) : null)}
+                                triggerClassName="h-8 rounded-full px-3 text-xs"
+                                options={[
+                                  { value: '', label: '不绑定代理' },
+                                  ...proxyOptions.map((proxy) => ({
+                                    value: String(proxy.id),
+                                    label: `${proxy.label} · ${proxy.detected_ip || proxyStatusLabel(proxy)}`,
+                                  })),
+                                ]}
+                              />
                             </div>
                           ) : (
                             <div className="max-w-[220px] truncate font-medium" title={account.label}>{account.label}</div>
@@ -3973,6 +4007,7 @@ function AccountsPage() {
                                 <Button variant="secondary" size="sm" onClick={() => checkAccount.mutate(account.id)} disabled={checkAccount.isPending}>
                                   检测
                                 </Button>
+
                                 <Button variant="danger" size="sm" onClick={() => deleteAccount.mutate(account.id)} disabled={deleteAccount.isPending}>
                                   删除
                                 </Button>
@@ -4014,6 +4049,7 @@ function AccountsPage() {
                               <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2">
                                 <div className="text-xs text-[hsl(var(--muted))]">治理</div>
                                 <div className="mt-1"><Badge tone={account.tier === 'stable' ? 'success' : 'warning'}>{statusLabel(account.tier)}</Badge></div>
+
                                 <div className="mt-2 text-xs text-[hsl(var(--muted))]">任务 {account.task_count} · 成功 {account.success_count} · 失败 {account.failure_count}</div>
                                 <div className="mt-1 text-xs text-[hsl(var(--muted))]">上次使用：{account.last_used_at || '-'}</div>
                                 <div className="mt-1 text-xs text-[hsl(var(--muted))]">冷却至：{account.cooldown_until || '-'}</div>
@@ -4376,18 +4412,14 @@ function RunControlPage() {
             <Field label="用户名列表"><Textarea rows={3} value={form.user_lst} onChange={(e) => setForm((prev) => ({ ...prev, user_lst: e.target.value }))} /></Field>
             <Field label="Cookie"><Textarea rows={3} value={form.cookie} onChange={(e) => setForm((prev) => ({ ...prev, cookie: e.target.value }))} /></Field>
             <Field label="代理池">
-              <select
-                className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3"
-                value={form.proxy_id ?? ''}
-                onChange={(e) => setForm((prev) => ({ ...prev, proxy_id: e.target.value ? Number(e.target.value) : null }))}
-              >
-                <option value="">使用手填代理</option>
-                {usableProxies.map((proxy) => (
-                  <option key={proxy.id} value={proxy.id}>
-                    {proxy.label}
-                  </option>
-                ))}
-              </select>
+              <SelectMenu
+                value={form.proxy_id ? String(form.proxy_id) : ''}
+                onValueChange={(value) => setForm((prev) => ({ ...prev, proxy_id: value ? Number(value) : null }))}
+                options={[
+                  { value: '', label: '使用手填代理' },
+                  ...usableProxies.map((proxy) => ({ value: String(proxy.id), label: proxy.label })),
+                ]}
+              />
             </Field>
             <div className="grid gap-2 text-sm font-medium">
               <span>时间范围</span>
