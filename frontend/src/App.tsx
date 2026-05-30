@@ -2108,7 +2108,6 @@ function TaskDetailPage({ id }: { id: number }) {
   const [resultQuery, setResultQuery] = useState('');
   const [resultSearch, setResultSearch] = useState('');
   const [mediaFilter, setMediaFilter] = useState('');
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const resultLimit = 10;
   const { data, isLoading } = useQuery({ queryKey: ['task', id], queryFn: () => api.task(id), refetchInterval: 4000 });
   const { data: resultData, isLoading: resultsLoading, refetch: refetchResults } = useQuery({
@@ -2116,14 +2115,8 @@ function TaskDetailPage({ id }: { id: number }) {
     queryFn: () => api.taskItems(id, { offset: resultOffset, limit: resultLimit, q: resultSearch, has_media: mediaFilter }),
     refetchInterval: 4000,
   });
-  const { data: logData } = useQuery({ queryKey: ['operation-logs', 'task', id], queryFn: () => api.operationLogs({ task_id: id, limit: 80 }), refetchInterval: 4000 });
   const task = data?.task;
-  const operationLogs = logData?.logs || [];
   const [copyStatus, setCopyStatus] = useState('');
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 30000);
-    return () => window.clearInterval(timer);
-  }, []);
   const cancel = useMutation({
     mutationFn: () => api.cancelTask(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['task', id] }),
@@ -2182,6 +2175,10 @@ function TaskDetailPage({ id }: { id: number }) {
         </Button>
         <Button variant="secondary" onClick={() => (window.location.href = `/tasks/${task.id}/download`)}>
           打包下载
+        </Button>
+        <Button variant="secondary" onClick={() => navigate(`/operation-logs?task_id=${task.id}`)}>
+          <ClipboardList className="h-4 w-4" />
+          关联运维日志
         </Button>
         <Button
           variant="secondary"
@@ -2305,17 +2302,6 @@ function TaskDetailPage({ id }: { id: number }) {
         }}
         fallbackPreview={task.preview}
       />
-
-      <div>
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <ClipboardList className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
-            <h3 className="font-semibold">运维事件</h3>
-          </div>
-          <Button variant="secondary" size="sm" onClick={() => navigate(`/operation-logs?task_id=${task.id}`)}>查看全部关联日志</Button>
-        </div>
-        <OperationLogTable logs={operationLogs} nowMs={nowMs} />
-      </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
         <CollapsibleTaskCard title="配置" summary={`${configCount} 项`}>
