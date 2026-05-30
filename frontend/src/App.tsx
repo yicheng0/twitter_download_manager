@@ -2186,7 +2186,7 @@ function TaskFormPage() {
         <CardHeader>
           <div>
             <h3 className="font-semibold">基础采集</h3>
-            <p className="mt-1 text-sm text-[hsl(var(--muted))]">例如输入 https://x.com/arsenal，采最近 10 条推文，包含图片和视频。</p>
+            <p className="mt-1 text-sm text-[hsl(var(--muted))]">例如输入 https://x.com/arsenal，采最近 10 条原创帖子，包含文本、互动数据和媒体。</p>
           </div>
         </CardHeader>
         <CardContent className="space-y-4">

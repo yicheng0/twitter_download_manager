@@ -54,6 +54,10 @@ def time2stamp(timestr):
     return int(time.mktime(datetime_obj.timetuple()) * 1000.0 + datetime_obj.microsecond / 1000.0)
 
 
+def end_of_day_stamp(timestr):
+    return time2stamp(timestr) + (24 * 60 * 60 * 1000) - 1
+
+
 def default_time_range(days=365):
     end = datetime.now()
     start = end - timedelta(days=days - 1)
@@ -139,14 +143,14 @@ class BenchmarkAccountDownloader:
         self.time_range = config.get('time_range') or default_time_range()
         start, end = self.time_range.split(':', 1)
         self.start_time_stamp = time2stamp(start)
-        self.end_time_stamp = time2stamp(end)
+        self.end_time_stamp = end_of_day_stamp(end)
         self.request_count = 0
         self.download_count = 0
         self.target_count = len([item for item in str(config.get('targets') or '').replace(',', '\n').splitlines() if parse_screen_name(item)])
         self.api_budget_limit = int(config.get('api_budget') or (self.target_count * (1 + ((self.tweet_limit + 19) // 20))) or 0)
         self.budget = RequestBudget(self.api_budget_limit)
         self.cache_user_ttl = int(config.get('cache_user_ttl_seconds') or os.environ.get('TW_CACHE_USER_TTL_SECONDS', '86400') or 86400)
-        self.cache_timeline_ttl = int(config.get('cache_timeline_ttl_seconds') or os.environ.get('TW_CACHE_TIMELINE_TTL_SECONDS', '900') or 900)
+        self.cache_timeline_ttl = int(config.get('cache_timeline_ttl_seconds') or 0)
         self.headers = {
             'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
             'authorization': AUTHORIZATION,
@@ -185,11 +189,7 @@ class BenchmarkAccountDownloader:
             raw_tweet = raw_tweet['tweet']
         legacy = raw_tweet.get('legacy') or {}
         if 'retweeted_status_result' in legacy:
-            if not self.has_retweet:
-                return None
-            raw_tweet = legacy['retweeted_status_result']['result']
-            if 'tweet' in raw_tweet:
-                raw_tweet = raw_tweet['tweet']
+            return None
         return raw_tweet
 
     def tweet_timestamp(self, tweet):
@@ -200,7 +200,18 @@ class BenchmarkAccountDownloader:
             initial = edit_control.get('edit_control_initial') or {}
             return int(initial['editable_until_msecs']) - 3600000
 
-    def extract_tweet(self, item):
+    def is_original_tweet(self, legacy, screen_name, target_screen_name):
+        if target_screen_name and screen_name.lower() != target_screen_name.lower().lstrip('@'):
+            return False
+        if legacy.get('in_reply_to_status_id_str') or legacy.get('in_reply_to_user_id_str'):
+            return False
+        status_id = legacy.get('id_str')
+        conversation_id = legacy.get('conversation_id_str')
+        if status_id and conversation_id and conversation_id != status_id:
+            return False
+        return True
+
+    def extract_tweet(self, item, target_screen_name=''):
         if 'tweet' not in item.get('entryId', '') or 'promoted-tweet' in item.get('entryId', ''):
             return None
         content = item.get('content') or item.get('item') or {}
@@ -218,6 +229,8 @@ class BenchmarkAccountDownloader:
         user_legacy = tweet['core']['user_results']['result']['legacy']
         screen_name = user_legacy['screen_name']
         status_id = legacy.get('id_str') or legacy.get('conversation_id_str')
+        if not self.is_original_tweet(legacy, screen_name, target_screen_name):
+            return None
         if 'note_tweet' in tweet:
             content_text = tweet['note_tweet']['note_tweet_results']['result']['text']
         else:
@@ -339,7 +352,7 @@ class BenchmarkAccountDownloader:
         tweet_limit = self.limit_for_user(user['screen_name'])
         folder_path = os.path.join(self.output_dir, del_special_char(user['screen_name']))
         os.makedirs(folder_path, exist_ok=True)
-        print(f'开始对标账号采集: @{user["screen_name"]}，最多 {tweet_limit} 条推文', flush=True)
+        print(f'开始对标账号采集: @{user["screen_name"]}，最多 {tweet_limit} 条原创帖子', flush=True)
         if self.api_budget_limit:
             print(f'预计 API 调用预算: {self.api_budget_limit} 次，已用 {self.request_count} 次', flush=True)
 
@@ -351,7 +364,7 @@ class BenchmarkAccountDownloader:
         try:
             while saved_tweets < tweet_limit:
                 url = self.tweet_url(user['rest_id'], cursor)
-                response = self.client.get_text(url, cache_namespace='benchmark_timeline', cache_key=f'{user["rest_id"]}:{cursor or "first"}:{self.time_range}:{self.has_retweet}', cache_ttl=self.cache_timeline_ttl)
+                response = self.client.get_text(url, cache_namespace='benchmark_timeline', cache_key=f'{user["rest_id"]}:{cursor or "first"}:{self.time_range}:original', cache_ttl=self.cache_timeline_ttl)
                 self.request_count = self.budget.used
                 raw_data = json.loads(response)
                 page_delay()
@@ -362,7 +375,7 @@ class BenchmarkAccountDownloader:
                 for item in entries:
                     if saved_tweets >= tweet_limit:
                         break
-                    tweet = self.extract_tweet(item)
+                    tweet = self.extract_tweet(item, user['screen_name'])
                     if not tweet:
                         continue
                     if tweet.get('too_old'):
@@ -389,7 +402,7 @@ class BenchmarkAccountDownloader:
 
         if all_media_jobs:
             asyncio.run(self.download_media(all_media_jobs))
-        print(f'@{user["screen_name"]} 采集完成: {saved_tweets} 条推文，{len(all_media_jobs)} 个媒体任务，API 已用 {self.request_count} 次', flush=True)
+        print(f'@{user["screen_name"]} 采集完成: {saved_tweets} 条原创帖子，{len(all_media_jobs)} 个媒体任务，API 已用 {self.request_count} 次', flush=True)
 
     def run(self):
         targets = [parse_screen_name(item) for item in str(self.config.get('targets') or '').replace(',', '\n').splitlines()]
