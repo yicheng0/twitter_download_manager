@@ -41,8 +41,8 @@
     "log_output": false,
     "log_output_info": "是否需要下载过程日志输出",
 
-    "max_concurrent_requests": 8,
-    "max_concurrent_requests_info": "最大并发数量, 默认为8, 对网络有自信的可以调高; 遇到多次下载失败时适当降低",
+    "max_concurrent_requests": 2,
+    "max_concurrent_requests_info": "最大并发数量, 保号优先建议 2-3; 遇到限流或多次下载失败时继续降低",
 
     "proxy": "",
     "proxy_info": "手动配置代理,默认为空,非必要无需填写。支持 http://localhost:port、socks5://user:pass@host:port、host:port:user:pass ",

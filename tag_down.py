@@ -13,7 +13,7 @@ from proxy_utils import proxy_for_httpx
 from url_utils import quote_url
 from transaction_generate import get_url_path
 from transaction_generate import get_transaction_id
-from crawler_runtime import AsyncCrawlerClient, CrawlerClient, classify_exception
+from crawler_runtime import AsyncCrawlerClient, CrawlerClient, classify_exception, media_download_retries, page_delay
 
 
 ##########配置区域##########
@@ -48,7 +48,7 @@ proxy = ''
 
 ##########配置区域##########
 
-max_concurrent_requests = 8     #最大并发数量，默认为8，遇到多次下载失败时适当降低
+max_concurrent_requests = 2     #最大并发数量，保号优先默认较低，遇到多次下载失败时适当降低
 
 if text_down:
     entries_count = 20
@@ -112,6 +112,9 @@ def download_control(media_lst, _csv):
                     break
                 except Exception as e:
                     count += 1
+                    if count >= media_download_retries():
+                        print(f'{_csv_info[6]}=====>第{count}次下载失败,已跳过')
+                        break
                     print(e)
                     print(f'{_csv_info[6]}=====>第{count}次下载失败,正在重试')
             _csv.data_input(_csv_info)
@@ -204,6 +207,7 @@ class tag_down():
         response = self.client.get_text(url, quote=False)
         try:
             raw_data = json.loads(response)
+            page_delay()
         except Exception:
             if 'Rate limit exceeded' in response:
                 print('API次数已超限')
@@ -278,6 +282,7 @@ class tag_down():
         response = self.client.get_text(url, quote=False)
         try:
             raw_data = json.loads(response)
+            page_delay()
         except Exception as e:
             print(f'CRAWLER_ERROR_TYPE={classify_exception(e)}')
             raise
@@ -353,6 +358,7 @@ class tag_down():
         response = self.client.get_text(url, quote=False)
         try:
             raw_data = json.loads(response)
+            page_delay()
         except Exception as e:
             print(f'CRAWLER_ERROR_TYPE={classify_exception(e)}')
             raise

@@ -254,6 +254,7 @@ def apply_schema_migrations():
             (1, migration_baseline_schema),
             (2, migration_scheduler_and_logs),
             (3, migration_runtime_indexes),
+            (4, migration_anti_detection_and_realtime),
         ]
         for version, migration in migrations:
             if current >= version:
@@ -414,6 +415,46 @@ def migration_runtime_indexes(conn):
     conn.execute('create index if not exists idx_operation_logs_event on operation_logs(event_type, created_at desc)')
     conn.execute('create index if not exists idx_operation_logs_task on operation_logs(task_id, created_at desc)')
     conn.execute('create index if not exists idx_operation_logs_schedule on operation_logs(schedule_id, created_at desc)')
+
+
+def migration_anti_detection_and_realtime(conn):
+    """Migration 4: 反检测机制和实时数据展示"""
+    # 1. 创建实时数据表
+    conn.executescript(
+        '''
+        create table if not exists task_items_realtime (
+            id integer primary key autoincrement,
+            task_id integer not null,
+            tweet_date text,
+            display_name text,
+            user_name text,
+            tweet_url text,
+            media_type text,
+            media_url text,
+            saved_filename text,
+            tweet_content text,
+            favorite_count integer default 0,
+            retweet_count integer default 0,
+            reply_count integer default 0,
+            created_at text not null,
+            foreign key (task_id) references tasks(id) on delete cascade
+        );
+        create index if not exists idx_task_items_realtime_task_id on task_items_realtime(task_id);
+        create index if not exists idx_task_items_realtime_created_at on task_items_realtime(created_at);
+        create unique index if not exists idx_task_items_realtime_tweet_url on task_items_realtime(task_id, tweet_url);
+        '''
+    )
+
+    # 2. 账号表新增反检测字段
+    ensure_column(conn, 'accounts', 'user_agent', 'text')
+    ensure_column(conn, 'accounts', 'accept_language', 'text')
+    ensure_column(conn, 'accounts', 'daily_quota', 'integer not null default 200')
+    ensure_column(conn, 'accounts', 'daily_used', 'integer not null default 0')
+    ensure_column(conn, 'accounts', 'quota_reset_at', 'text')
+
+    # 3. 代理表新增健康检查字段
+    ensure_column(conn, 'proxies', 'health_score', 'real not null default 1.0')
+    ensure_column(conn, 'proxies', 'last_check_at', 'text')
 
 
 def seconds_from_now(seconds):

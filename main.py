@@ -94,7 +94,7 @@ with open(settings_file, 'r', encoding='utf8') as f:
     if settings['max_concurrent_requests']:
         max_concurrent_requests = settings['max_concurrent_requests']
     else:
-        max_concurrent_requests = 8
+        max_concurrent_requests = 2
 ###### proxy ######
     if settings['proxy']:
         proxies = proxy_for_httpx(settings['proxy'])
@@ -423,7 +423,7 @@ def download_control(_user_info):
                 break
             elif photo_lst[0] == True:
                 continue
-            semaphore = asyncio.Semaphore(max_concurrent_requests)    #最大并发数量，默认为8，对自己网络有自信的可以调高
+            semaphore = asyncio.Semaphore(max_concurrent_requests)    # 最大并发数量，保号优先默认较低
             client = AsyncCrawlerClient(cookie=settings['cookie'], proxy=settings.get('proxy') or '', headers=_headers, max_connections=max_concurrent_requests)
             if down_log:
                 try:

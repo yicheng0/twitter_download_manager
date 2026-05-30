@@ -48,7 +48,7 @@ class RunConfig(BaseModel):
     image_format: str = "orig"
     has_video: bool = True
     log_output: bool = True
-    max_concurrent_requests: int = Field(8, ge=1, le=64)
+    max_concurrent_requests: int = Field(2, ge=1, le=3)
     proxy: str = ""
     md_output: bool = False
     media_count_limit: int = Field(350, ge=0)
@@ -222,7 +222,7 @@ def get_config() -> dict[str, Any]:
         "image_format": settings.get("image_format", "orig"),
         "has_video": bool(settings.get("has_video", True)),
         "log_output": True,
-        "max_concurrent_requests": int(settings.get("max_concurrent_requests", 8) or 8),
+        "max_concurrent_requests": int(settings.get("max_concurrent_requests", 2) or 2),
         "proxy": settings.get("proxy", ""),
         "md_output": bool(settings.get("md_output", False)),
         "media_count_limit": int(settings.get("media_count_limit", 350) or 0),

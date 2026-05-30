@@ -53,7 +53,7 @@ class ScheduleOperationsTest(unittest.TestCase):
         with web_app.db() as conn:
             row = conn.execute("select value from app_meta where key = 'schema_version'").fetchone()
             columns = {item['name'] for item in conn.execute('pragma table_info(scheduled_tasks)').fetchall()}
-        self.assertEqual(int(row['value']), 3)
+        self.assertEqual(int(row['value']), 4)
         self.assertIn('timezone', columns)
         self.assertIn('consecutive_failures', columns)
 

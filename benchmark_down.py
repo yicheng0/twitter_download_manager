@@ -128,7 +128,7 @@ class BenchmarkAccountDownloader:
         self.tweet_limit = int(config.get('tweet_limit') or 50)
         self.has_video = bool(config.get('has_video', True))
         self.has_retweet = bool(config.get('has_retweet'))
-        self.max_concurrent_requests = int(config.get('max_concurrent_requests') or 3)
+        self.max_concurrent_requests = int(config.get('max_concurrent_requests') or 2)
         self.time_range = config.get('time_range') or default_time_range()
         start, end = self.time_range.split(':', 1)
         self.start_time_stamp = time2stamp(start)

@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 
 from user_info import User_info
-from crawler_runtime import CrawlerClient, classify_exception
+from crawler_runtime import CrawlerClient, classify_exception, page_delay
 
 
 
@@ -153,6 +153,7 @@ class text_down():
             response = self.client.get_text(url)
             try:
                 raw_data = json.loads(response)
+                page_delay()
             except Exception:
                 if 'Rate limit exceeded' in response:
                     print('API次数已超限')

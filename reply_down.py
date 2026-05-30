@@ -15,7 +15,7 @@ from tag_down import hash_save_token
 from tag_down import stamp2time
 from transaction_generate import get_transaction_id
 from transaction_generate import get_url_path
-from crawler_runtime import AsyncCrawlerClient, CrawlerClient
+from crawler_runtime import AsyncCrawlerClient, CrawlerClient, media_download_retries, page_delay
 
 ##########配置区域##########
 
@@ -91,7 +91,7 @@ def download_control(media_lst):
                         f.write(response.content)
                     break
                 except Exception as e:
-                    if count >= 50:
+                    if count >= media_download_retries():
                         print(f'{url}=====>第{count}次下载失败,已跳过')
                         break
                     count += 1
@@ -110,8 +110,8 @@ def download_control(media_lst):
 ##########高级配置区域##########
 # 如无特殊需要 请勿修改
 
-max_concurrent_requests = 8
-# 最大并发数量, 默认为8, 对网络有自信的可以调高; 遇到多次下载失败时适当降低.
+max_concurrent_requests = 2
+# 最大并发数量, 保号优先默认较低; 遇到多次下载失败时适当降低.
 
 min_replies = 1
 # 筛选最小回复数, 只获取大于该数值的推文的评论区.
@@ -178,6 +178,7 @@ class Reply_down():
             response = self.client.get_text(url, quote=False)
             try:
                 raw_data = json.loads(response)
+                page_delay()
             except Exception:
                 if 'Rate limit exceeded' in response:
                     print('API次数已超限')
