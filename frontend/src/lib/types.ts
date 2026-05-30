@@ -18,6 +18,8 @@ export type AccountCapacity = {
   next_available_at: string | null;
   rate_limited_24h: number;
   failure_24h: number;
+  failure_ratio_24h?: number;
+  pressure_ratio_24h?: number;
   adaptive_policy?: {
     enabled: boolean;
     risk_level: 'healthy' | 'watch' | 'risky' | 'cooldown' | 'expired' | string;
@@ -83,6 +85,16 @@ export type ProxyItem = {
   detected_ip: string | null;
   failure_count: number;
   success_count: number;
+  health_score: number | null;
+  last_check_at: string | null;
+  quality?: {
+    score: number;
+    level: string;
+    reason: string;
+    success_count: number;
+    failure_count: number;
+    last_check_at: string | null;
+  };
   last_used_at: string | null;
   cooldown_until: string | null;
   created_at: string;

@@ -111,6 +111,8 @@ ADAPTIVE_THROTTLE_ENABLED = os.environ.get('TW_ADAPTIVE_THROTTLE_ENABLED', '1').
 RISKY_TWEET_LIMIT = max(1, int(os.environ.get('TW_RISKY_TWEET_LIMIT', '10') or 10))
 WATCH_TWEET_LIMIT = max(RISKY_TWEET_LIMIT, int(os.environ.get('TW_WATCH_TWEET_LIMIT', '20') or 20))
 RISKY_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_RISKY_MIN_INTERVAL_SECONDS', '3600') or 3600))
+RISKY_PRECHECK_BUDGET_RATIO = max(0.1, min(float(os.environ.get('TW_RISKY_PRECHECK_BUDGET_RATIO', '0.8') or 0.8), 1.0))
+WATCH_PRECHECK_BUDGET_RATIO = max(RISKY_PRECHECK_BUDGET_RATIO, min(float(os.environ.get('TW_WATCH_PRECHECK_BUDGET_RATIO', '1.0') or 1.0), 1.0))
 WATCH_ACCOUNT_API_INTERVAL_SECONDS = max(0.1, float(os.environ.get('TW_WATCH_ACCOUNT_API_INTERVAL_SECONDS', '15') or 15))
 RISKY_ACCOUNT_API_INTERVAL_SECONDS = max(WATCH_ACCOUNT_API_INTERVAL_SECONDS, float(os.environ.get('TW_RISKY_ACCOUNT_API_INTERVAL_SECONDS', '30') or 30))
 DEFAULT_MAX_CONCURRENT_REQUESTS = max(1, int(os.environ.get('TW_DEFAULT_MAX_CONCURRENT_REQUESTS', '2') or 2))
@@ -1322,6 +1324,9 @@ def proxy_payload(proxy):
         'detected_ip': proxy['detected_ip'] if 'detected_ip' in proxy.keys() else None,
         'failure_count': proxy['failure_count'] if 'failure_count' in proxy.keys() else 0,
         'success_count': proxy['success_count'] if 'success_count' in proxy.keys() else 0,
+        'health_score': proxy['health_score'] if 'health_score' in proxy.keys() else None,
+        'last_check_at': proxy['last_check_at'] if 'last_check_at' in proxy.keys() else None,
+        'quality': proxy_quality_payload(proxy),
         'last_used_at': proxy['last_used_at'] if 'last_used_at' in proxy.keys() else None,
         'cooldown_until': proxy['cooldown_until'] if 'cooldown_until' in proxy.keys() else None,
         'created_at': proxy['created_at'],
@@ -2968,6 +2973,8 @@ def account_capacity_payload(account, conn=None):
         task_used = usage['task_count']
         api_remaining = max(api_budget - api_used, 0)
         task_remaining = max(task_limit - task_used, 0)
+        failure_ratio = usage['failure_count'] / max(usage['task_count'], 1)
+        pressure_ratio = api_used / api_budget if api_budget else 0
         status = account['status']
         cooldown_until = row_datetime(account['cooldown_until'] if 'cooldown_until' in account.keys() else None)
         cooldown_remaining = max(0, int((cooldown_until - datetime.now()).total_seconds())) if cooldown_until else 0
@@ -2991,6 +2998,7 @@ def account_capacity_payload(account, conn=None):
             score -= min(55, int(usage_ratio * 55))
             score -= min(20, usage['rate_limited_count'] * 20)
             score -= min(20, usage['failure_count'] * 8)
+            score -= min(12, int(failure_ratio * 24))
             score -= min(15, failure_count * 3)
             score += min(8, success_count)
             if min_interval_remaining:
@@ -3029,6 +3037,8 @@ def account_capacity_payload(account, conn=None):
             'next_available_at': next_available_at,
             'rate_limited_24h': usage['rate_limited_count'],
             'failure_24h': usage['failure_count'],
+            'failure_ratio_24h': round(failure_ratio, 3),
+            'pressure_ratio_24h': round(pressure_ratio, 3),
         }
         payload['adaptive_policy'] = adaptive_policy_for_capacity(payload)
         return payload
@@ -3074,7 +3084,42 @@ def account_selection_score(conn, account):
 def proxy_selection_score(proxy):
     failures = int(proxy['failure_count'] if 'failure_count' in proxy.keys() else 0)
     successes = int(proxy['success_count'] if 'success_count' in proxy.keys() else 0)
-    return failures * 5 - successes
+    health_score = float(proxy['health_score'] if 'health_score' in proxy.keys() and proxy['health_score'] is not None else 1.0)
+    return failures * 5 - successes - int(health_score * 10)
+
+
+def proxy_quality_payload(proxy):
+    successes = int(proxy['success_count'] if 'success_count' in proxy.keys() else 0)
+    failures = int(proxy['failure_count'] if 'failure_count' in proxy.keys() else 0)
+    total = successes + failures
+    health_score = float(proxy['health_score'] if 'health_score' in proxy.keys() and proxy['health_score'] is not None else (successes / total if total else 1.0))
+    health_score = max(0.0, min(1.0, health_score))
+    if not proxy['enabled']:
+        level = 'disabled'
+        reason = '代理已停用'
+    elif in_cooldown(proxy):
+        level = 'cooldown'
+        reason = '代理正在冷却'
+    elif proxy['status'] != 'active':
+        level = 'warning'
+        reason = proxy['last_error'] or '代理检测异常'
+    elif health_score < 0.55 or failures >= 5:
+        level = 'risky'
+        reason = '代理近期失败较多'
+    elif health_score < 0.8 or failures:
+        level = 'watch'
+        reason = '代理可用但需要观察'
+    else:
+        level = 'healthy'
+        reason = '代理质量正常'
+    return {
+        'score': round(health_score, 3),
+        'level': level,
+        'reason': reason,
+        'success_count': successes,
+        'failure_count': failures,
+        'last_check_at': proxy['last_check_at'] if 'last_check_at' in proxy.keys() else None,
+    }
 
 
 def resource_policy_payload():
@@ -3196,6 +3241,39 @@ def apply_adaptive_throttle(config, account, conn):
     config['adaptive_throttle_applied'] = bool(changes)
     config['adaptive_throttle_changes'] = changes
     return config
+
+
+def precheck_task_budget(config, account, conn):
+    budget = int(config.get('api_budget') or estimate_api_budget(config) or 0)
+    if not budget:
+        return {'ok': True, 'budget': 0, 'message': ''}
+    capacity = account_capacity_payload(account, conn)
+    policy = capacity.get('adaptive_policy') or {}
+    risk_level = policy.get('risk_level') or capacity.get('level') or 'healthy'
+    remaining = int(capacity.get('api_remaining_estimate') or 0)
+    allowed = remaining
+    if risk_level == 'risky':
+        allowed = int(remaining * RISKY_PRECHECK_BUDGET_RATIO)
+    elif risk_level == 'watch':
+        allowed = int(remaining * WATCH_PRECHECK_BUDGET_RATIO)
+    if budget > max(allowed, 0):
+        return {
+            'ok': False,
+            'budget': budget,
+            'remaining': remaining,
+            'allowed': max(allowed, 0),
+            'risk_level': risk_level,
+            'message': f'任务预计需要 {budget} 次 API，但账号剩余额度约 {remaining} 次（{risk_level} 风险层级可用 {max(allowed, 0)} 次）。请减少目标、降低条数或换账号。',
+        }
+    if risk_level in {'watch', 'risky'} and budget >= max(1, int(remaining * 0.75)):
+        append_operation_log(
+            'warning',
+            'task_budget_pressure',
+            f'任务接近账号剩余额度：预计 {budget} / 剩余 {remaining}',
+            error_type='budget_pressure',
+            details={'account_id': account['id'], 'risk_level': risk_level, 'budget': budget, 'remaining': remaining},
+        )
+    return {'ok': True, 'budget': budget, 'remaining': remaining, 'allowed': allowed, 'risk_level': risk_level, 'message': ''}
 
 
 def select_account_for_task_in_conn(conn, preferred_account_id=0):
@@ -3886,6 +3964,7 @@ def record_task_resource_result(task, status, error_type, rate_limit_reset_at=No
     account_id = task.get('account_id')
     proxy_id = task.get('proxy_id') or None
     error_label = error_type or status
+    log_events = []
     with db() as conn:
         if status == 'completed':
             if account_id:
@@ -3916,6 +3995,7 @@ def record_task_resource_result(task, status, error_type, rate_limit_reset_at=No
                     ''',
                     (account_status, error_label, account_id),
                 )
+                log_events.append(('error', 'account_isolated', '账号会话异常，已暂停分配', {'account_id': account_id}))
             elif account_cooldown:
                 cooldown_until = rate_limit_reset_at if error_type == 'rate_limited' and rate_limit_reset_at else seconds_from_now(account_cooldown)
                 conn.execute(
@@ -3926,6 +4006,7 @@ def record_task_resource_result(task, status, error_type, rate_limit_reset_at=No
                     ''',
                     (error_label, cooldown_until, account_id),
                 )
+                log_events.append(('warning', 'account_cooldown_set', f'账号触发 {error_label}，冷却至 {cooldown_until}', {'account_id': account_id, 'cooldown_until': cooldown_until}))
         if proxy_id and error_type in {'network_failed', 'rate_limited'}:
             proxy_cooldown = resource_cooldown_for_error(error_type, 'proxy')
             cooldown_until = rate_limit_reset_at if error_type == 'rate_limited' and rate_limit_reset_at else seconds_from_now(proxy_cooldown)
@@ -3937,6 +4018,9 @@ def record_task_resource_result(task, status, error_type, rate_limit_reset_at=No
                 ''',
                 (error_label, cooldown_until, proxy_id),
             )
+            log_events.append(('warning', 'proxy_cooldown_set', f'代理触发 {error_label}，冷却至 {cooldown_until}', {'proxy_id': proxy_id, 'cooldown_until': cooldown_until}))
+    for level, event_type, message, details in log_events:
+        append_operation_log(level, event_type, message, error_type=error_type, details=details)
 
 
 def build_runtime_settings(config: dict):
@@ -4721,6 +4805,16 @@ def create_queued_task(user_id, account_id, config, resource_mode='manual', sche
             account_id = account['id']
             apply_automatic_concurrency(config)
             apply_adaptive_throttle(config, account, conn)
+            precheck = precheck_task_budget(config, account, conn)
+            if not precheck['ok']:
+                append_operation_log(
+                    'warning',
+                    'task_budget_rejected',
+                    precheck['message'],
+                    error_type='budget_pressure',
+                    details={'account_id': account_id, 'task_type': config.get('task_type'), 'precheck': precheck},
+                )
+                raise HTTPException(status_code=400, detail=precheck['message'])
             api_budget = int(config.get('api_budget') or estimate_api_budget(config) or 0)
             if api_budget:
                 config['api_budget'] = api_budget
@@ -4771,6 +4865,16 @@ def create_queued_task(user_id, account_id, config, resource_mode='manual', sche
         schedule_id=schedule_id,
         details={'task_type': config.get('task_type'), 'target': task_target_label(config), 'resource_mode': resource_mode},
     )
+    if config.get('adaptive_throttle_applied'):
+        append_operation_log(
+            'warning',
+            'task_auto_throttled',
+            '任务已按账号风险自动降载',
+            task_id=task_id,
+            schedule_id=schedule_id,
+            error_type='adaptive_throttle',
+            details={'policy': config.get('adaptive_policy'), 'changes': config.get('adaptive_throttle_changes')},
+        )
     start_background_worker()
     return task_id
 
@@ -5217,6 +5321,25 @@ def run_task(task, worker_id='worker-1'):
         elif has_partial_result:
             status = 'partial_failed'
             error = f'{error}；已保留部分采集结果'
+    if error_type == 'rate_limited':
+        append_operation_log(
+            'warning',
+            'task_stopped_rate_limit',
+            '任务因接口限流提前停止',
+            task_id=task['id'],
+            schedule_id=task.get('schedule_id'),
+            error_type=error_type,
+            details={'rate_limit_reset_at': parse_crawler_rate_limit_reset(log_text)},
+        )
+    elif error_type == 'budget_exhausted':
+        append_operation_log(
+            'warning',
+            'task_stopped_budget',
+            '任务因 API 预算耗尽提前停止',
+            task_id=task['id'],
+            schedule_id=task.get('schedule_id'),
+            error_type=error_type,
+        )
     retry_count = int(task.get('retry_count') or 0)
     max_retries = int(task.get('max_retries') or 2)
     if return_code != 0 and not has_partial_result and should_retry_task(error_type) and retry_count < max_retries:

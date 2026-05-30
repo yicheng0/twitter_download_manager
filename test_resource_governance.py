@@ -862,6 +862,45 @@ class ResourceGovernanceTest(unittest.TestCase):
         self.assertFalse(web_app.should_retry_task('rate_limited'))
         self.assertTrue(web_app.should_retry_task('network_failed'))
 
+    def test_precheck_task_budget_rejects_over_remaining_budget(self):
+        with web_app.db() as conn:
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at, tier, daily_quota)
+                values (?, ?, ?, ?, ?, 'active', ?, 'stable', 5)
+                ''',
+                ('budget-precheck', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'budgetprecheck', web_app.now()),
+            ).lastrowid
+            conn.execute(
+                '''
+                insert into tasks (user_id, account_id, task_type, title, config_json, status, output_dir, log_path, created_at, api_calls)
+                values (1, ?, 'benchmark_account', 'used', '{}', 'completed', ?, ?, ?, 4)
+                ''',
+                (account_id, os.environ['TW_WEB_DATA_DIR'], os.path.join(os.environ['TW_WEB_DATA_DIR'], 'used.log'), web_app.now()),
+            )
+            account = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
+            result = web_app.precheck_task_budget({'task_type': 'benchmark_account', 'targets': 'one,two', 'tweet_limit': 50}, account, conn)
+
+        self.assertFalse(result['ok'])
+        self.assertGreater(result['budget'], result['allowed'])
+        self.assertIn('预计需要', result['message'])
+
+    def test_proxy_payload_includes_quality_score(self):
+        with web_app.db() as conn:
+            proxy_id = conn.execute(
+                '''
+                insert into proxies (label, proxy, enabled, status, created_at, success_count, failure_count, health_score, last_check_at)
+                values (?, ?, 1, 'active', ?, 8, 2, 0.8, ?)
+                ''',
+                ('quality-proxy', 'http://127.0.0.1:8080', web_app.now(), web_app.now()),
+            ).lastrowid
+            proxy = conn.execute('select * from proxies where id = ?', (proxy_id,)).fetchone()
+            payload = web_app.proxy_payload(proxy)
+
+        self.assertEqual(payload['quality']['score'], 0.8)
+        self.assertEqual(payload['quality']['level'], 'watch')
+        self.assertEqual(payload['last_check_at'], payload['quality']['last_check_at'])
+
     def test_local_login_helper_reports_unsupported_backend(self):
         original_name = web_app.os.name
         try:
