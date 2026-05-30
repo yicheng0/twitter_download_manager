@@ -402,6 +402,40 @@ class ResourceGovernanceTest(unittest.TestCase):
             web_app.DEFAULT_MAX_CONCURRENT_REQUESTS = original_default
         self.assertEqual(config['max_concurrent_requests'], 2)
 
+    def test_missing_concurrency_is_selected_automatically(self):
+        config = {
+            'task_type': 'benchmark_account',
+            'targets': 'one',
+            'time_range': web_app.task_default_time_range(),
+            'tweet_limit': 10,
+        }
+        web_app.validate_task_config(config)
+        self.assertEqual(config['max_concurrent_requests'], 2)
+
+    def test_large_healthy_task_uses_higher_automatic_concurrency(self):
+        with web_app.db() as conn:
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at, tier)
+                values (?, ?, ?, ?, ?, 'active', ?, ?, 'stable')
+                ''',
+                ('large-auto', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'largeauto', web_app.now(), web_app.now()),
+            ).lastrowid
+
+        config = {
+            'task_type': 'benchmark_account',
+            'targets': 'one\ntwo',
+            'time_range': web_app.task_default_time_range(),
+            'tweet_limit': 50,
+        }
+        web_app.validate_task_config(config)
+        task_id = web_app.create_queued_task(1, account_id, config)
+
+        with web_app.db() as conn:
+            task = conn.execute('select * from tasks where id = ?', (task_id,)).fetchone()
+        saved = web_app.json.loads(task['config_json'])
+        self.assertEqual(saved['max_concurrent_requests'], 3)
+
     def test_benchmark_task_title_omits_repeated_type_prefix(self):
         self.assertEqual(
             web_app.title_from_config({'task_type': 'benchmark_account', 'targets': 'arsenal'}),
@@ -675,6 +709,77 @@ class ResourceGovernanceTest(unittest.TestCase):
             selected = web_app.select_proxy_for_task_in_conn(conn, account_id=account_id)
 
         self.assertEqual(selected['label'], 'fallback-ready')
+
+    def test_account_warmup_promotes_stable_after_three_successes(self):
+        with web_app.db() as conn:
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at, tier)
+                values (?, ?, ?, ?, ?, 'active', ?, 'new')
+                ''',
+                ('warmup', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'warmupacct', web_app.now()),
+            ).lastrowid
+
+        original_validate = web_app.validate_account_cookie
+        web_app.validate_account_cookie = lambda cookie: (True, 'warmupacct', '')
+        try:
+            with web_app.db() as conn:
+                for _ in range(web_app.ACCOUNT_WARMUP_STABLE_SUCCESS_THRESHOLD):
+                    result = web_app.run_account_warmup_once(conn, account_id)
+                    self.assertTrue(result['ok'])
+            with web_app.db() as conn:
+                account = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
+        finally:
+            web_app.validate_account_cookie = original_validate
+
+        self.assertEqual(account['tier'], 'stable')
+        self.assertEqual(account['warmup_success_streak'], web_app.ACCOUNT_WARMUP_STABLE_SUCCESS_THRESHOLD)
+        self.assertIsNotNone(account['last_warmup_at'])
+
+    def test_account_warmup_resets_streak_on_failed_check(self):
+        with web_app.db() as conn:
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at, tier, warmup_success_streak)
+                values (?, ?, ?, ?, ?, 'active', ?, 'new', 2)
+                ''',
+                ('warmup-fail', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'warmupfail', web_app.now()),
+            ).lastrowid
+
+        original_validate = web_app.validate_account_cookie
+        web_app.validate_account_cookie = lambda cookie: (False, None, 'HTTP 401')
+        try:
+            with web_app.db() as conn:
+                result = web_app.run_account_warmup_once(conn, account_id)
+            with web_app.db() as conn:
+                account = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
+        finally:
+            web_app.validate_account_cookie = original_validate
+
+        self.assertFalse(result['ok'])
+        self.assertEqual(account['warmup_success_streak'], 0)
+        self.assertNotEqual(account['tier'], 'stable')
+
+    def test_batch_warmup_targets_new_and_low_score_accounts(self):
+        with web_app.db() as conn:
+            new_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at, tier)
+                values (?, ?, ?, ?, ?, 'active', ?, 'new')
+                ''',
+                ('new-warmup', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'newwarmup', web_app.now()),
+            ).lastrowid
+            stable_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at, tier, warmup_success_streak)
+                values (?, ?, ?, ?, ?, 'active', ?, 'stable', ?)
+                ''',
+                ('stable-warmup', 'a2', 'c2', 'auth_token=a2; ct0=c2;', 'stablewarmup', web_app.now(), web_app.ACCOUNT_WARMUP_STABLE_SUCCESS_THRESHOLD),
+            ).lastrowid
+            targets = web_app.account_warmup_target_ids(conn)
+
+        self.assertIn(new_id, targets)
+        self.assertNotIn(stable_id, targets)
 
     def test_health_check_skips_recently_checked_proxies(self):
         old_checked_at = (web_app.datetime.now() - web_app.timedelta(seconds=web_app.PROXY_HEALTH_MIN_INTERVAL_SECONDS + 30)).strftime('%Y-%m-%d %H:%M:%S')

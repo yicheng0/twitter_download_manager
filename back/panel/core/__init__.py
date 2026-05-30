@@ -1,0 +1,1 @@
+"""Panel core configuration."""

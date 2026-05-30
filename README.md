@@ -215,8 +215,9 @@ Before enabling Caddy, confirm that host ports `80` and `443` are available, and
 
 | Script | Purpose |
 | --- | --- |
-| `web_app.py` | Full Web console backend. |
-| `panel_app.py` | Lightweight local browser panel. |
+| `back/` | Backend package containing the Web console and local panel implementations. |
+| `web_app.py` | Compatibility entrypoint for the full Web console backend in `back.web`. |
+| `panel_app.py` | Compatibility entrypoint for the lightweight local browser panel in `back.panel`. |
 | `main.py` | Download media by username according to `settings.json`. |
 | `tag_down.py` | Download by tag, keyword or advanced search query. |
 | `text_down.py` | Export text-only tweets for specified users. |

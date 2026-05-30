@@ -1,4 +1,4 @@
-import type { Account, ApiError, BitBrowserImportResponse, Dashboard, DashboardHeatmapItems, HealthStatus, LocalBrowserLoginHelperStatus, LoginQueueParseResponse, LoginQueueResponse, OperationLogResponse, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, Task, TaskItemsResponse, TrackedBlogger } from './types';
+import type { Account, AccountWarmupRun, ApiError, BitBrowserImportResponse, Dashboard, DashboardHeatmapItems, HealthStatus, LocalBrowserLoginHelperStatus, LoginQueueParseResponse, LoginQueueResponse, OperationLogResponse, ProxyItem, ResultDbConfig, ResultDbFormValues, RunConfig, RunStatus, ScheduledTask, Task, TaskItemsResponse, TrackedBlogger } from './types';
 
 type OperationLogParams = {
   task_id?: number;
@@ -145,6 +145,9 @@ export const api = {
   toggleResultDb: (id: number) => request<{ config: ResultDbConfig }>(`/api/result-db/${id}/toggle`, { method: 'POST' }),
   deleteResultDb: (id: number) => request<{ ok: boolean }>(`/api/result-db/${id}`, { method: 'DELETE' }),
   accounts: () => request<{ accounts: Account[] }>('/api/accounts'),
+  accountWarmupStatus: () => request<{ active: AccountWarmupRun | null; latest: AccountWarmupRun | null }>('/api/accounts/warmup/status'),
+  warmupAccounts: () => request<{ run: AccountWarmupRun }>('/api/accounts/warmup', { method: 'POST' }),
+  warmupAccount: (id: number) => request<{ run: AccountWarmupRun }>(`/api/accounts/${id}/warmup`, { method: 'POST' }),
   addAccount: (payload: Record<string, unknown>) => request<{ ok: boolean }>('/api/accounts/manual', { method: 'POST', body: JSON.stringify(payload) }),
   updateAccount: (id: number, payload: { label: string; bound_proxy_id?: number | null }) => request<{ account: Account }>(`/api/accounts/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   importBitBrowserAccounts: (payload: { base_url: string; browser_ids: string[] }) => request<BitBrowserImportResponse>('/api/accounts/import/bitbrowser', { method: 'POST', body: JSON.stringify(payload) }),

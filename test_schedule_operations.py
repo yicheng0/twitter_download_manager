@@ -152,6 +152,17 @@ class ScheduleOperationsTest(unittest.TestCase):
         self.assertEqual(state['latest_tweet_id'], '101')
         self.assertIsNone(state['pending_tweet_id'])
 
+    def test_schedule_config_does_not_require_concurrency(self):
+        config = web_app.build_schedule_config({
+            'task_type': 'benchmark_account',
+            'targets': 'acct',
+            'time_range': web_app.task_default_time_range(),
+            'tweet_limit': 10,
+            'has_video': True,
+        })
+
+        self.assertEqual(config['max_concurrent_requests'], 2)
+
     def test_run_now_does_not_change_next_run_at(self):
         account_id = self.add_account()
         next_run_at = web_app.seconds_from_now(7200)

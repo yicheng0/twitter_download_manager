@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Edit3, Eye, ExternalLink, FileArchive, FolderKanban, Image, Info, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, Search, ShieldCheck, Play, Save, Square, Target, TrendingUp, Video, X, Zap } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Edit3, Eye, ExternalLink, FileArchive, FolderKanban, Heart, Image, Info, LogOut, Menu, MessageCircle, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, Repeat2, Search, ShieldCheck, Play, Save, Square, Target, TrendingUp, Video, X, Zap } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { api } from './lib/api';
 import { Badge } from './components/ui/badge';
@@ -342,6 +342,11 @@ function accountBoundProxySummary(account: Account) {
   return `${label} · 不可用将回退`;
 }
 
+function accountWarmupSummary(account: Account) {
+  if (account.tier === 'stable') return `稳定 · 连续健康 ${account.warmup_success_streak || 0}/${3}`;
+  if (account.last_warmup_at) return `连续健康 ${account.warmup_success_streak || 0}/3 · ${account.last_warmup_at}`;
+  return '未养护';
+}
 
 function proxyStatusDescription(proxy: ProxyItem) {
   if (!proxy.enabled) return '当前代理不会参与运行。';
@@ -3226,11 +3231,11 @@ function AccountsPage() {
   const queryClient = useQueryClient();
   const { data } = useQuery({ queryKey: ['accounts'], queryFn: () => api.accounts(), refetchInterval: 8000 });
   const { data: proxiesData } = useQuery({ queryKey: ['proxies'], queryFn: () => api.proxies(), refetchInterval: 8000 });
-
+  const { data: warmupData } = useQuery({ queryKey: ['account-warmup-status'], queryFn: () => api.accountWarmupStatus(), refetchInterval: 2500 });
   const accounts = data?.accounts || [];
   const proxies = proxiesData?.proxies || [];
   const proxyOptions = proxies.filter((proxy) => proxy.enabled);
-
+  const activeWarmup = warmupData?.active;
   const capacityAccounts = accounts.filter((account) => account.capacity);
   const averageCapacity = capacityAccounts.length
     ? Math.round(capacityAccounts.reduce((sum, account) => sum + (account.capacity?.score || 0), 0) / capacityAccounts.length)
@@ -3463,7 +3468,24 @@ function AccountsPage() {
     },
     onError: (err: Error) => setError(err.message),
   });
-
+  const warmupAccount = useMutation({
+    mutationFn: (id: number) => api.warmupAccount(id),
+    onSuccess: () => {
+      setError('');
+      queryClient.invalidateQueries({ queryKey: ['account-warmup-status'] });
+      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
+  const warmupAccounts = useMutation({
+    mutationFn: () => api.warmupAccounts(),
+    onSuccess: () => {
+      setError('');
+      queryClient.invalidateQueries({ queryKey: ['account-warmup-status'] });
+      queryClient.invalidateQueries({ queryKey: ['accounts'] });
+    },
+    onError: (err: Error) => setError(err.message),
+  });
   const deleteAccount = useMutation({
     mutationFn: (id: number) => api.deleteAccount(id),
     onSuccess: () => {
@@ -3522,7 +3544,9 @@ function AccountsPage() {
   const pendingQueueCount = loginQueueItems.filter((item) => item.status === 'pending').length;
   const completedQueueCount = loginQueueItems.filter((item) => item.status === 'completed').length;
   const failedQueueCount = loginQueueItems.filter((item) => ['failed', 'expired', 'cancelled'].includes(item.status)).length;
-
+  const warmupRunning = Boolean(activeWarmup);
+  const warmupProgress = activeWarmup?.progress ?? 0;
+  const warmupTargetCount = accounts.filter((account) => account.tier === 'new' || (account.capacity?.score ?? 100) < 70 || (account.tier !== 'stable' && (account.warmup_success_streak || 0) < 3)).length;
 
   const retryLocalHelper = async () => {
     if (!browserLoginToken || !browserLoginCallbackUrl) {
@@ -3808,18 +3832,39 @@ function AccountsPage() {
           <div className="min-w-0">
             <div className="font-semibold">账号养护 / 健康保护</div>
             <div className="mt-1 max-w-[780px] truncate text-xs text-[hsl(var(--muted))]">
-              已启用冷启动保护、每日额度、最小间隔、冷却和风险收敛；VPS 多账号建议绑定稳定代理，绑定代理不可用时会回退自动代理。
+              一键养护只做代理、Cookie、额度和冷却检测；连续 3 次健康后自动进入稳定层级，不做自动互动。
             </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <Badge tone="primary">健康保护</Badge>
             <Badge tone="warning">新号低频</Badge>
             <Badge tone="neutral">无自动互动</Badge>
-
+            <Button variant="secondary" size="sm" onClick={() => warmupAccounts.mutate()} disabled={warmupRunning || warmupAccounts.isPending || warmupTargetCount === 0}>
+              <ShieldCheck className="h-4 w-4" />
+              一键养护新号
+            </Button>
           </div>
         </CardContent>
       </Card>
 
+      {activeWarmup && (
+        <Card>
+          <CardContent className="space-y-2 px-4 py-3 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-semibold">账号养护进行中</div>
+                <div className="mt-1 max-w-[760px] truncate text-xs text-[hsl(var(--muted))]">
+                  {activeWarmup.message || '正在执行安全养护'} · {activeWarmup.done}/{activeWarmup.total} · 成功 {activeWarmup.ok} · 需关注 {activeWarmup.failed}
+                </div>
+              </div>
+              <Badge tone="primary">{warmupProgress}%</Badge>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-[hsl(var(--panel-soft))]">
+              <div className="h-full rounded-full bg-[hsl(var(--primary))] transition-all" style={{ width: `${warmupProgress}%` }} />
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
@@ -4007,7 +4052,9 @@ function AccountsPage() {
                                 <Button variant="secondary" size="sm" onClick={() => checkAccount.mutate(account.id)} disabled={checkAccount.isPending}>
                                   检测
                                 </Button>
-
+                                <Button variant="secondary" size="sm" onClick={() => warmupAccount.mutate(account.id)} disabled={warmupRunning || warmupAccount.isPending}>
+                                  养护
+                                </Button>
                                 <Button variant="danger" size="sm" onClick={() => deleteAccount.mutate(account.id)} disabled={deleteAccount.isPending}>
                                   删除
                                 </Button>
@@ -4049,7 +4096,7 @@ function AccountsPage() {
                               <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2">
                                 <div className="text-xs text-[hsl(var(--muted))]">治理</div>
                                 <div className="mt-1"><Badge tone={account.tier === 'stable' ? 'success' : 'warning'}>{statusLabel(account.tier)}</Badge></div>
-
+                                <div className="mt-2 text-xs text-[hsl(var(--muted))]">{accountWarmupSummary(account)}</div>
                                 <div className="mt-2 text-xs text-[hsl(var(--muted))]">任务 {account.task_count} · 成功 {account.success_count} · 失败 {account.failure_count}</div>
                                 <div className="mt-1 text-xs text-[hsl(var(--muted))]">上次使用：{account.last_used_at || '-'}</div>
                                 <div className="mt-1 text-xs text-[hsl(var(--muted))]">冷却至：{account.cooldown_until || '-'}</div>

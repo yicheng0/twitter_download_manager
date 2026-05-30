@@ -46,8 +46,30 @@ export type Account = {
   bound_proxy_status: string | null;
   bound_proxy_enabled: boolean | null;
   bound_proxy_available: boolean;
+  warmup_success_streak: number;
+  last_warmup_at: string | null;
+  latest_warmup: AccountWarmupRun | null;
   capacity?: AccountCapacity;
   created_at: string;
+};
+
+export type AccountWarmupRun = {
+  id: number;
+  account_id: number | null;
+  status: string;
+  scope: string;
+  total: number;
+  done: number;
+  ok: number;
+  failed: number;
+  progress: number;
+  message: string;
+  error: string;
+  details: Record<string, unknown>;
+  started_at: string | null;
+  finished_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 export type ProxyItem = {
