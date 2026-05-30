@@ -12,6 +12,7 @@ import type { Account, BitBrowserImportResult, DashboardHeatmap, DashboardHeatma
 import { cn } from './lib/utils';
 import { getTaskTemplateById, taskTemplates, type TaskTemplate } from './lib/templates';
 import { defaultRunTimeRange, defaultTaskTimeRange, presetFromTimeRange, rangeFromPreset, splitTimeRange, timeRangeError, TIME_PRESETS, todayString, type TimePreset } from './lib/timeRange';
+import { TaskLiveView } from './pages/TaskLiveView';
 
 type BadgeTone = 'neutral' | 'success' | 'warning' | 'danger' | 'primary';
 type HeatmapMetric = 'count' | 'media_count' | 'task_count';
@@ -448,6 +449,7 @@ function AuthenticatedApp() {
         <Route path="/tasks" element={<TaskListPage />} />
         <Route path="/tasks/new" element={<TaskFormPage />} />
         <Route path="/tasks/:id" element={<TaskDetailRoute />} />
+        <Route path="/tasks/:id/live" element={<TaskLiveView />} />
         <Route path="/schedules" element={<SchedulesPage />} />
         <Route path="/operation-logs" element={<OperationLogsPage />} />
         <Route path="/result-db" element={<ResultDbPage />} />
@@ -1675,6 +1677,12 @@ function TaskDetailPage({ id }: { id: number }) {
           <RefreshCcw className="h-4 w-4" />
           刷新
         </Button>
+        {task.status === 'running' && (
+          <Button onClick={() => navigate(`/tasks/${id}/live`)}>
+            <Eye className="h-4 w-4" />
+            实时查看
+          </Button>
+        )}
         {(task.status === 'queued' || task.status === 'running') && (
           <Button variant="danger" onClick={() => cancel.mutate()}>
             取消任务

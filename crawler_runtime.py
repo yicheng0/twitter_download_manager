@@ -118,7 +118,27 @@ def ct0_from_cookie(cookie):
     return match.group(1)
 
 
-def standard_headers(cookie, referer='https://twitter.com/'):
+def standard_headers(cookie, account_row=None, referer='https://twitter.com/'):
+    """
+    生成标准请求头，支持反检测
+
+    Args:
+        cookie: Cookie 字符串
+        account_row: 账号数据库记录（可选，用于反检测）
+        referer: Referer URL
+
+    Returns:
+        dict: 请求头
+    """
+    if account_row:
+        # 使用反检测请求头
+        try:
+            from anti_detection import generate_request_headers
+            return generate_request_headers(account_row, cookie, referer)
+        except Exception:
+            pass  # 如果反检测模块不可用，回退到默认实现
+
+    # 默认实现（兼容旧代码）
     return {
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36',
         'authorization': AUTHORIZATION,
@@ -128,6 +148,7 @@ def standard_headers(cookie, referer='https://twitter.com/'):
     }
 
 
+
 def resource_key(value):
     text = str(value or 'none')
     return quote(text, safe='')[:180] or 'none'
@@ -135,31 +156,59 @@ def resource_key(value):
 
 @dataclass
 class RuntimeLimits:
-    account_api_interval: float = 15.0
-    proxy_api_interval: float = 3.0
+    account_api_interval: float = 8.0
+    account_api_variance: float = 5.0  # 新增：账号间隔抖动范围
+    proxy_api_interval: float = 0.5
+    proxy_api_variance: float = 1.0  # 新增：代理间隔抖动范围
     media_download_interval: float = 0.0
+    page_delay_base: float = 5.0  # 新增：翻页延迟基础值
+    page_delay_variance: float = 3.0  # 新增：翻页延迟抖动范围
+    break_after_requests: int = 25  # 新增：多少次请求后休息
+    break_duration_min: int = 30  # 新增：休息最短时长（秒）
+    break_duration_max: int = 90  # 新增：休息最长时长（秒）
     max_retries: int = 1
-    backoff_base: float = 1.0
+    backoff_base: float = 2.0
 
     @classmethod
     def from_env(cls):
         return cls(
-            account_api_interval=float(os.environ.get('TW_ACCOUNT_API_INTERVAL_SECONDS', '15') or 15),
-            proxy_api_interval=float(os.environ.get('TW_PROXY_API_INTERVAL_SECONDS', '3') or 3),
+            account_api_interval=float(os.environ.get('TW_ACCOUNT_API_INTERVAL_SECONDS', '8') or 8),
+            account_api_variance=float(os.environ.get('TW_ACCOUNT_API_VARIANCE_SECONDS', '5') or 5),
+            proxy_api_interval=float(os.environ.get('TW_PROXY_API_INTERVAL_SECONDS', '0.5') or 0.5),
+            proxy_api_variance=float(os.environ.get('TW_PROXY_API_VARIANCE_SECONDS', '1') or 1),
             media_download_interval=float(os.environ.get('TW_MEDIA_DOWNLOAD_INTERVAL_SECONDS', '0') or 0),
+            page_delay_base=float(os.environ.get('TW_PAGE_DELAY_BASE_SECONDS', '5') or 5),
+            page_delay_variance=float(os.environ.get('TW_PAGE_DELAY_VARIANCE_SECONDS', '3') or 3),
+            break_after_requests=int(os.environ.get('TW_BREAK_AFTER_REQUESTS', '25') or 25),
+            break_duration_min=int(os.environ.get('TW_BREAK_DURATION_MIN_SECONDS', '30') or 30),
+            break_duration_max=int(os.environ.get('TW_BREAK_DURATION_MAX_SECONDS', '90') or 90),
             max_retries=max(1, int(os.environ.get('TW_CRAWLER_REQUEST_RETRIES', '1') or 1)),
-            backoff_base=max(0.1, float(os.environ.get('TW_CRAWLER_BACKOFF_BASE_SECONDS', '1') or 1)),
+            backoff_base=max(0.1, float(os.environ.get('TW_CRAWLER_BACKOFF_BASE_SECONDS', '2') or 2)),
         )
 
 
 def page_delay():
-    delay = max(0.0, float(os.environ.get('TW_CRAWLER_PAGE_DELAY_SECONDS', '6') or 0))
+    """翻页延迟（支持随机抖动）"""
+    try:
+        from anti_detection import random_interval
+        limits = RuntimeLimits.from_env()
+        delay = random_interval(limits.page_delay_base, limits.page_delay_variance)
+    except Exception:
+        # 回退到固定延迟
+        delay = max(0.0, float(os.environ.get('TW_CRAWLER_PAGE_DELAY_SECONDS', '6') or 0))
     if delay:
         time.sleep(delay)
 
 
 async def async_page_delay():
-    delay = max(0.0, float(os.environ.get('TW_CRAWLER_PAGE_DELAY_SECONDS', '6') or 0))
+    """异步翻页延迟（支持随机抖动）"""
+    try:
+        from anti_detection import random_interval
+        limits = RuntimeLimits.from_env()
+        delay = random_interval(limits.page_delay_base, limits.page_delay_variance)
+    except Exception:
+        # 回退到固定延迟
+        delay = max(0.0, float(os.environ.get('TW_CRAWLER_PAGE_DELAY_SECONDS', '6') or 0))
     if delay:
         await asyncio.sleep(delay)
 
@@ -252,6 +301,19 @@ class FileThrottle:
             await asyncio.sleep(delay)
 
     def _reserve(self, scope, key, interval):
+        """预留资源使用时间槽（支持随机抖动）"""
+        # 根据 scope 应用不同的抖动
+        try:
+            from anti_detection import random_interval
+            if scope == 'account':
+                actual_interval = random_interval(interval, self.limits.account_api_variance)
+            elif scope == 'proxy':
+                actual_interval = random_interval(interval, self.limits.proxy_api_variance)
+            else:
+                actual_interval = interval
+        except Exception:
+            actual_interval = interval
+
         self.base_dir.mkdir(parents=True, exist_ok=True)
         path = self.base_dir / f'{scope}-{resource_key(key)}.txt'
         lock_path = self.base_dir / f'{scope}-{resource_key(key)}.lock'
@@ -263,7 +325,7 @@ class FileThrottle:
                     previous = float(path.read_text(encoding='utf-8') or '0')
                 except ValueError:
                     previous = 0.0
-            available_at = max(now_ts, previous + interval)
+            available_at = max(now_ts, previous + actual_interval)
             path.write_text(str(available_at), encoding='utf-8')
         return max(0.0, available_at - now_ts)
 
@@ -300,18 +362,35 @@ def cross_process_lock(path):
 
 
 class CrawlerClient:
-    def __init__(self, cookie='', proxy='', account_key='', throttle=None, headers=None, budget=None, cache=None):
+    def __init__(self, cookie='', proxy='', account_key='', throttle=None, headers=None, budget=None, cache=None, account_row=None):
         self.cookie = cookie
         self.proxy = proxy_for_httpx(proxy)
         self.account_key = account_key or cookie
         self.proxy_key = proxy or ''
         self.throttle = throttle or FileThrottle()
-        self.headers = dict(headers or standard_headers(cookie))
+        self.headers = dict(headers or standard_headers(cookie, account_row))
         self.limits = RuntimeLimits.from_env()
         self.budget = budget
         self.cache = cache or ResponseCache()
+        self.account_row = account_row  # 新增：存储账号信息
+        self.request_count = 0  # 新增：请求计数（用于休息机制）
+
+    def _check_and_take_break(self):
+        """检查是否需要休息（反检测机制）"""
+        try:
+            from anti_detection import should_take_break, calculate_break_duration
+            if should_take_break(self.request_count, self.limits.break_after_requests):
+                duration = calculate_break_duration(self.limits.break_duration_min, self.limits.break_duration_max)
+                print(f'[反检测] 已请求 {self.request_count} 次，休息 {duration} 秒...', flush=True)
+                time.sleep(duration)
+                self.request_count = 0
+        except Exception:
+            pass  # 如果反检测模块不可用，跳过
 
     def get_text(self, url, headers=None, timeout=DEFAULT_TIMEOUT, quote=True, cache_namespace='', cache_key='', cache_ttl=0):
+        # 检查是否需要休息
+        self._check_and_take_break()
+
         if cache_ttl:
             cached = self.cache.get(cache_namespace or 'http_text', cache_key or url, cache_ttl)
             if cached is not None:
@@ -348,6 +427,9 @@ class CrawlerClient:
                 response = httpx.get(quote_url(url) if should_quote else url, headers=headers, proxy=self.proxy, timeout=timeout)
                 self._maybe_emit_low_remaining(response)
                 raise_for_crawler_response(response)
+                # 请求成功，增加计数
+                if not media:
+                    self.request_count += 1
                 return response
             except Exception as exc:
                 last_error = exc

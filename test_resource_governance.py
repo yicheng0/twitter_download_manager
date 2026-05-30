@@ -38,6 +38,104 @@ class ResourceGovernanceTest(unittest.TestCase):
         selected = web_app.select_account_for_task()
         self.assertEqual(selected['label'], 'ready')
 
+    def test_account_capacity_payload_reports_remaining_budget(self):
+        with web_app.db() as conn:
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at, tier, daily_quota)
+                values (?, ?, ?, ?, ?, 'active', ?, ?, 'stable', 20)
+                ''',
+                ('capacity', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'capacity', web_app.now(), web_app.now()),
+            ).lastrowid
+            conn.execute(
+                '''
+                insert into tasks (user_id, account_id, task_type, title, config_json, status, output_dir, log_path, created_at, api_calls)
+                values (1, ?, 'benchmark_account', 'used task', '{}', 'completed', ?, ?, ?, 7)
+                ''',
+                (account_id, os.environ['TW_WEB_DATA_DIR'], os.path.join(os.environ['TW_WEB_DATA_DIR'], 'used.log'), web_app.now()),
+            )
+            account = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
+            capacity = web_app.account_capacity_payload(account, conn)
+
+        self.assertEqual(capacity['api_used_24h'], 7)
+        self.assertEqual(capacity['api_budget_24h'], 20)
+        self.assertEqual(capacity['api_remaining_estimate'], 13)
+        self.assertEqual(capacity['level'], 'healthy')
+
+    def test_account_capacity_marks_cooldown_and_expired_accounts(self):
+        with web_app.db() as conn:
+            cooldown_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at, cooldown_until)
+                values (?, ?, ?, ?, ?, 'active', ?, ?)
+                ''',
+                ('cooling', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'cooling', web_app.now(), web_app.seconds_from_now(3600)),
+            ).lastrowid
+            expired_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at)
+                values (?, ?, ?, ?, ?, 'auth_expired', ?)
+                ''',
+                ('expired', 'a2', 'c2', 'auth_token=a2; ct0=c2;', 'expired', web_app.now()),
+            ).lastrowid
+            cooling = web_app.account_capacity_payload(conn.execute('select * from accounts where id = ?', (cooldown_id,)).fetchone(), conn)
+            expired = web_app.account_capacity_payload(conn.execute('select * from accounts where id = ?', (expired_id,)).fetchone(), conn)
+
+        self.assertEqual(cooling['level'], 'cooldown')
+        self.assertGreater(cooling['cooldown_remaining_seconds'], 0)
+        self.assertEqual(expired['score'], 0)
+        self.assertEqual(expired['level'], 'expired')
+
+    def test_account_capacity_marks_exhausted_daily_api_budget(self):
+        with web_app.db() as conn:
+            account_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at, tier, daily_quota)
+                values (?, ?, ?, ?, ?, 'active', ?, 'stable', 10)
+                ''',
+                ('limited', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'limited', web_app.now()),
+            ).lastrowid
+            conn.execute(
+                '''
+                insert into tasks (user_id, account_id, task_type, title, config_json, status, output_dir, log_path, created_at, api_calls)
+                values (1, ?, 'benchmark_account', 'budget task', '{}', 'completed', ?, ?, ?, 12)
+                ''',
+                (account_id, os.environ['TW_WEB_DATA_DIR'], os.path.join(os.environ['TW_WEB_DATA_DIR'], 'budget.log'), web_app.now()),
+            )
+            account = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
+            capacity = web_app.account_capacity_payload(account, conn)
+
+        self.assertEqual(capacity['api_remaining_estimate'], 0)
+        self.assertEqual(capacity['level'], 'limited')
+        self.assertLessEqual(capacity['score'], 25)
+
+    def test_auto_account_prefers_higher_capacity_score(self):
+        with web_app.db() as conn:
+            low_id = conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at, tier, daily_quota, failure_count)
+                values (?, ?, ?, ?, ?, 'active', ?, 'stable', 10, 5)
+                ''',
+                ('low', 'a1', 'c1', 'auth_token=a1; ct0=c1;', 'low', web_app.now()),
+            ).lastrowid
+            conn.execute(
+                '''
+                insert into accounts (label, auth_token, ct0, cookie, screen_name, status, created_at, tier, daily_quota)
+                values (?, ?, ?, ?, ?, 'active', ?, 'stable', 50)
+                ''',
+                ('high', 'a2', 'c2', 'auth_token=a2; ct0=c2;', 'high', web_app.now()),
+            )
+            conn.execute(
+                '''
+                insert into tasks (user_id, account_id, task_type, title, config_json, status, output_dir, log_path, created_at, api_calls)
+                values (1, ?, 'benchmark_account', 'spent task', '{}', 'completed', ?, ?, ?, 9)
+                ''',
+                (low_id, os.environ['TW_WEB_DATA_DIR'], os.path.join(os.environ['TW_WEB_DATA_DIR'], 'spent.log'), web_app.now()),
+            )
+
+        selected = web_app.select_account_for_task()
+        self.assertEqual(selected['label'], 'high')
+
     def test_new_account_daily_limit_blocks_manual_selection(self):
         with web_app.db() as conn:
             cursor = conn.execute(

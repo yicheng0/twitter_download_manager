@@ -270,12 +270,12 @@ Resource governance defaults:
 | `TW_PROXY_FAILURE_COOLDOWN_SECONDS` | `1800` | Proxy cooldown after network failures. |
 | `TW_PROXY_RATE_LIMIT_COOLDOWN_SECONDS` | `7200` | Proxy cooldown after rate-limit failures. |
 | `TW_WORKER_CONCURRENCY` | `1` | Maximum background tasks running at once. |
-| `TW_ACCOUNT_API_INTERVAL_SECONDS` | `15` | Minimum interval between account API requests across workers. |
+| `TW_ACCOUNT_API_INTERVAL_SECONDS` | `8` | Minimum interval between account API requests across workers. |
 | `TW_CRAWLER_PAGE_DELAY_SECONDS` | `6` | Delay after each GraphQL timeline page. |
 | `TW_CRAWLER_REQUEST_RETRIES` | `1` | Request retries. Auth failures stop immediately. |
 | `TW_MEDIA_DOWNLOAD_RETRIES` | `5` | Maximum retries per media download. |
 | `TW_DEFAULT_MAX_CONCURRENT_REQUESTS` | `2` | Default media download concurrency. |
-| `TW_MAX_CONCURRENT_REQUESTS_CAP` | `3` | Backend cap for task concurrency values. |
+| `TW_MAX_CONCURRENT_REQUESTS_CAP` | `16` | Backend cap for task concurrency values. |
 | `TW_ACCOUNT_HEALTH_MIN_INTERVAL_SECONDS` | `1800` | Minimum interval between account health checks. |
 
 Scheduled tasks can use a fixed account or `account_id = 0` for automatic account assignment. Automatic assignment reuses the same resource governance and atomic reservation path as manually created tasks.
