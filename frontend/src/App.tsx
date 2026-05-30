@@ -237,6 +237,18 @@ function accountUsabilityDescription(account: Account) {
   return statusDescription(account.status) || '当前不会自动分配任务。';
 }
 
+function proxyStatusLabel(proxy: ProxyItem) {
+  if (!proxy.enabled) return '已停用';
+  if (proxy.status === 'check_failed') return '自动恢复中';
+  return statusLabel(proxy.status);
+}
+
+function proxyStatusDescription(proxy: ProxyItem) {
+  if (!proxy.enabled) return '当前代理不会参与运行。';
+  if (proxy.status === 'check_failed') return '探测失败，系统会继续心跳检测，恢复后自动参与任务。';
+  return statusDescription(proxy.status) || '代理状态';
+}
+
 function riskLevelLabel(level?: string) {
   return {
     healthy: '健康',
@@ -3601,10 +3613,10 @@ function ProxyPage() {
                     <td className="px-4 py-3">
                       <div className="space-y-1">
                         <Badge tone={proxy.enabled && proxy.status === 'active' ? 'success' : statusTone(proxy.enabled ? proxy.status : 'disabled')}>
-                          {proxy.enabled ? statusLabel(proxy.status) : '已停用'}
+                          {proxyStatusLabel(proxy)}
                         </Badge>
                         <div className="max-w-[240px] text-xs text-[hsl(var(--muted))]">
-                          {proxy.enabled ? (statusDescription(proxy.status) || '代理状态') : '当前代理不会参与运行。'}
+                          {proxyStatusDescription(proxy)}
                         </div>
                       </div>
                     </td>

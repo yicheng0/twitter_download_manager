@@ -545,8 +545,98 @@ class ResourceGovernanceTest(unittest.TestCase):
         self.assertIn('resource_policy', payload)
         self.assertEqual(payload['resource_policy']['account_new_task_limit_24h'], web_app.ACCOUNT_NEW_TASK_LIMIT_24H)
         self.assertEqual(payload['resource_policy']['proxy_min_interval_seconds'], web_app.PROXY_MIN_INTERVAL_SECONDS)
+        self.assertEqual(payload['resource_policy']['proxy_health_min_interval_seconds'], web_app.PROXY_HEALTH_MIN_INTERVAL_SECONDS)
         self.assertEqual(payload['resource_policy']['default_max_concurrent_requests'], web_app.DEFAULT_MAX_CONCURRENT_REQUESTS)
         self.assertEqual(payload['resource_policy']['account_api_interval_seconds'], web_app.ACCOUNT_API_INTERVAL_SECONDS)
+
+    def test_proxy_health_failure_keeps_enabled_and_cools_down(self):
+        with web_app.db() as conn:
+            proxy_id = conn.execute(
+                '''
+                insert into proxies (label, proxy, enabled, status, created_at)
+                values (?, ?, 1, 'active', ?)
+                ''',
+                ('proxy', 'http://127.0.0.1:8080', web_app.now()),
+            ).lastrowid
+
+        refreshed = web_app.update_proxy_health(proxy_id, False, error='connect timeout')
+
+        self.assertTrue(refreshed['enabled'])
+        self.assertEqual(refreshed['status'], 'check_failed')
+        self.assertIsNotNone(refreshed['cooldown_until'])
+        self.assertEqual(refreshed['failure_count'], 1)
+        self.assertIn('connect timeout', refreshed['last_error'])
+
+    def test_proxy_health_success_auto_restores_failed_proxy(self):
+        with web_app.db() as conn:
+            proxy_id = conn.execute(
+                '''
+                insert into proxies (label, proxy, enabled, status, created_at, cooldown_until, last_error, failure_count)
+                values (?, ?, 1, 'check_failed', ?, ?, 'connect timeout', 3)
+                ''',
+                ('proxy', 'http://127.0.0.1:8080', web_app.now(), web_app.seconds_from_now(1800)),
+            ).lastrowid
+
+        refreshed = web_app.update_proxy_health(proxy_id, True, ip='203.0.113.1')
+
+        self.assertTrue(refreshed['enabled'])
+        self.assertEqual(refreshed['status'], 'active')
+        self.assertEqual(refreshed['detected_ip'], '203.0.113.1')
+        self.assertIsNone(refreshed['cooldown_until'])
+        self.assertIsNone(refreshed['last_error'])
+        self.assertEqual(refreshed['failure_count'], 0)
+
+    def test_auto_proxy_selection_skips_failed_proxy_until_restored(self):
+        with web_app.db() as conn:
+            conn.execute(
+                '''
+                insert into proxies (label, proxy, enabled, status, created_at, cooldown_until)
+                values (?, ?, 1, 'check_failed', ?, ?)
+                ''',
+                ('failed', 'http://127.0.0.1:8080', web_app.now(), web_app.seconds_from_now(1800)),
+            )
+            conn.execute(
+                '''
+                insert into proxies (label, proxy, enabled, status, created_at)
+                values (?, ?, 1, 'active', ?)
+                ''',
+                ('ready', 'http://127.0.0.1:8081', web_app.now()),
+            )
+            selected = web_app.select_proxy_for_task_in_conn(conn)
+
+        self.assertEqual(selected['label'], 'ready')
+
+    def test_health_check_skips_recently_checked_proxies(self):
+        old_checked_at = (web_app.datetime.now() - web_app.timedelta(seconds=web_app.PROXY_HEALTH_MIN_INTERVAL_SECONDS + 30)).strftime('%Y-%m-%d %H:%M:%S')
+        with web_app.db() as conn:
+            recent_id = conn.execute(
+                '''
+                insert into proxies (label, proxy, enabled, status, last_checked_at, created_at)
+                values (?, ?, 1, 'active', ?, ?)
+                ''',
+                ('recent-proxy', 'http://127.0.0.1:8080', web_app.now(), web_app.now()),
+            ).lastrowid
+            old_id = conn.execute(
+                '''
+                insert into proxies (label, proxy, enabled, status, last_checked_at, created_at)
+                values (?, ?, 1, 'active', ?, ?)
+                ''',
+                ('old-proxy', 'http://127.0.0.1:8081', old_checked_at, web_app.now()),
+            ).lastrowid
+
+        checked = []
+        original_account_check = web_app.check_account_row
+        original_proxy_check = web_app.check_proxy_row
+        web_app.check_account_row = lambda account: None
+        web_app.check_proxy_row = lambda proxy: checked.append(proxy['id'])
+        try:
+            web_app.run_health_check_once()
+        finally:
+            web_app.check_account_row = original_account_check
+            web_app.check_proxy_row = original_proxy_check
+
+        self.assertEqual(checked, [old_id])
+        self.assertNotIn(recent_id, checked)
 
     def test_health_check_skips_running_and_recently_checked_accounts(self):
         with web_app.db() as conn:

@@ -103,6 +103,7 @@ ACCOUNT_TRANSIENT_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_ACCOUNT_TRANS
 PROXY_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_PROXY_MIN_INTERVAL_SECONDS', str(3 * 60)) or 0))
 PROXY_FAILURE_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_PROXY_FAILURE_COOLDOWN_SECONDS', str(30 * 60)) or 0))
 PROXY_RATE_LIMIT_COOLDOWN_SECONDS = max(0, int(os.environ.get('TW_PROXY_RATE_LIMIT_COOLDOWN_SECONDS', str(2 * 60 * 60)) or 0))
+PROXY_HEALTH_MIN_INTERVAL_SECONDS = max(0, int(os.environ.get('TW_PROXY_HEALTH_MIN_INTERVAL_SECONDS', str(5 * 60)) or 0))
 ADAPTIVE_THROTTLE_ENABLED = os.environ.get('TW_ADAPTIVE_THROTTLE_ENABLED', '1').lower() not in {'0', 'false', 'no', 'off'}
 RISKY_TWEET_LIMIT = max(1, int(os.environ.get('TW_RISKY_TWEET_LIMIT', '10') or 10))
 WATCH_TWEET_LIMIT = max(RISKY_TWEET_LIMIT, int(os.environ.get('TW_WATCH_TWEET_LIMIT', '20') or 20))
@@ -2744,6 +2745,7 @@ def resource_policy_payload():
         'proxy_min_interval_seconds': PROXY_MIN_INTERVAL_SECONDS,
         'proxy_failure_cooldown_seconds': PROXY_FAILURE_COOLDOWN_SECONDS,
         'proxy_rate_limit_cooldown_seconds': PROXY_RATE_LIMIT_COOLDOWN_SECONDS,
+        'proxy_health_min_interval_seconds': PROXY_HEALTH_MIN_INTERVAL_SECONDS,
         'account_health_min_interval_seconds': ACCOUNT_HEALTH_MIN_INTERVAL_SECONDS,
         'crawler_page_delay_seconds': CRAWLER_PAGE_DELAY_SECONDS,
         'media_download_retries': MEDIA_DOWNLOAD_RETRIES,
@@ -2928,11 +2930,11 @@ def record_task_bloggers_in_conn(conn, config):
 
 def select_proxy_for_task_in_conn(conn, preferred_proxy_id=0, manual_proxy='', account_id=None):
     if preferred_proxy_id:
-        proxy = conn.execute("select * from proxies where id = ? and enabled = 1 and status = 'active'", (preferred_proxy_id,)).fetchone()
+        proxy = conn.execute('select * from proxies where id = ? and enabled = 1', (preferred_proxy_id,)).fetchone()
         if not proxy:
-            raise HTTPException(status_code=400, detail='所选代理不可用，请先到代理页检测或换一个代理。')
-        if not proxy_available_for_task(proxy):
-            raise HTTPException(status_code=400, detail='所选代理正在冷却，请稍后再试或使用自动分配。')
+            raise HTTPException(status_code=400, detail='所选代理已停用，请启用后重试或换一个代理。')
+        if proxy['status'] != 'active' or not proxy_available_for_task(proxy):
+            raise HTTPException(status_code=400, detail='所选代理正在自动探测恢复，可稍后重试或改用自动分配。')
         return proxy
     if manual_proxy:
         return None
@@ -3108,9 +3110,16 @@ def update_proxy_health(proxy_id, ok, ip='', error=''):
                 (ip or None, now(), proxy_id),
             )
         else:
+            cooldown_until = seconds_from_now(PROXY_FAILURE_COOLDOWN_SECONDS) if PROXY_FAILURE_COOLDOWN_SECONDS else None
             conn.execute(
-                "update proxies set status = 'expired', enabled = 0, detected_ip = null, failure_count = coalesce(failure_count, 0) + 1, last_checked_at = ?, last_error = ? where id = ?",
-                (now(), redact_sensitive(error), proxy_id),
+                '''
+                update proxies
+                set status = 'check_failed', detected_ip = null,
+                    failure_count = coalesce(failure_count, 0) + 1,
+                    cooldown_until = ?, last_checked_at = ?, last_error = ?
+                where id = ?
+                ''',
+                (cooldown_until, now(), redact_sensitive(error), proxy_id),
             )
         return conn.execute('select * from proxies where id = ?', (proxy_id,)).fetchone()
 
@@ -3141,9 +3150,11 @@ def get_active_account_or_error(account_id):
 
 def get_active_proxy_or_error(proxy_id):
     with db() as conn:
-        proxy = conn.execute("select * from proxies where id = ? and enabled = 1 and status = 'active'", (proxy_id,)).fetchone()
+        proxy = conn.execute('select * from proxies where id = ? and enabled = 1', (proxy_id,)).fetchone()
     if not proxy:
-        raise HTTPException(status_code=400, detail='所选代理不可用，请先到代理页检测或换一个代理。')
+        raise HTTPException(status_code=400, detail='所选代理已停用，请启用后重试或换一个代理。')
+    if proxy['status'] != 'active' or in_cooldown(proxy):
+        raise HTTPException(status_code=400, detail='所选代理正在自动探测恢复，可稍后重试或改用自动分配。')
     return proxy
 
 
@@ -3903,6 +3914,8 @@ def run_health_check_once():
                 continue
             check_account_row(account)
         for proxy in proxies:
+            if seconds_since(proxy['last_checked_at'] if 'last_checked_at' in proxy.keys() else None) < PROXY_HEALTH_MIN_INTERVAL_SECONDS:
+                continue
             check_proxy_row(proxy)
     except Exception as exc:
         with health_lock:
