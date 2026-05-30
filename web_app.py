@@ -3401,14 +3401,31 @@ def validate_account_cookie(cookie):
         return False, None, str(exc)
 
 
+def normalize_account_label(value, fallback='X Account'):
+    label = str(value or '').strip()
+    if not label:
+        label = fallback
+    label = re.sub(r'\s+', ' ', label)
+    if len(label) > 80:
+        label = label[:80].strip()
+    if not label:
+        raise HTTPException(status_code=400, detail='账号名称不能为空')
+    return label
+
+
+def default_local_chrome_label():
+    return f'Local Chrome Login {datetime.now().strftime("%m%d-%H%M%S")}'
+
+
 def save_account(label, auth_token, ct0, screen_name=None):
     cookie = f'auth_token={auth_token}; ct0={ct0};'
+    label = normalize_account_label(label, screen_name or 'X Account')
     with db() as conn:
         existing = conn.execute('select id from accounts where auth_token = ? and ct0 = ?', (auth_token, ct0)).fetchone()
         if existing:
             conn.execute(
                 'update accounts set label = ?, cookie = ?, screen_name = coalesce(?, screen_name), status = ?, last_checked_at = ? where id = ?',
-                (label or screen_name or 'X Account', cookie, screen_name, 'active', now(), existing['id']),
+                (label, cookie, screen_name, 'active', now(), existing['id']),
             )
             return
         conn.execute(
@@ -3416,7 +3433,7 @@ def save_account(label, auth_token, ct0, screen_name=None):
             insert into accounts (label, auth_token, ct0, cookie, screen_name, status, last_checked_at, created_at)
             values (?, ?, ?, ?, ?, 'active', ?, ?)
             ''',
-            (label or screen_name or 'X Account', auth_token, ct0, cookie, screen_name, now(), now()),
+            (label, auth_token, ct0, cookie, screen_name, now(), now()),
         )
 
 
@@ -5743,6 +5760,13 @@ def api_local_browser_login_helper_ensure(user=Depends(require_api_admin)):
 async def api_local_browser_login_start(request: Request, user=Depends(require_api_admin)):
     if not browser_login_available():
         raise HTTPException(status_code=403, detail='浏览器登录已被 TW_WEB_ENABLE_BROWSER_LOGIN=0 禁用。')
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    label = str(data.get('label') or '').strip()
+    if label:
+        label = normalize_account_label(label)
     token = secrets.token_urlsafe(32)
     expires_at = time.time() + LOCAL_BROWSER_LOGIN_TIMEOUT_SECONDS
     with local_browser_login_lock:
@@ -5753,6 +5777,7 @@ async def api_local_browser_login_start(request: Request, user=Depends(require_a
             'created_at': time.time(),
             'expires_at': expires_at,
             'user_id': user['id'],
+            'label': label,
         }
     base_url = public_base_url(request)
     return {
@@ -5833,7 +5858,7 @@ async def api_local_browser_login_complete(request: Request):
         if not session:
             raise HTTPException(status_code=404, detail='本地授权登录已不存在或已过期')
         final_screen_name = checked_screen_name or screen_name
-        label = session.get('label') or final_screen_name or 'Local Chrome Login'
+        label = session.get('label') or final_screen_name or default_local_chrome_label()
         save_account(label, auth_token, ct0, final_screen_name)
         session['status'] = 'completed'
         if ok:
@@ -6042,6 +6067,20 @@ def api_check_account(account_id: int, user=Depends(require_api_admin)):
         raise HTTPException(status_code=404, detail='Account not found')
     refreshed, ok, error = check_account_row(account)
     return {'account': account_payload(refreshed), 'ok': ok, 'error': error}
+
+
+@app.patch('/api/accounts/{account_id}')
+async def api_update_account(account_id: int, request: Request, user=Depends(require_api_admin)):
+    data = await request.json()
+    label = normalize_account_label(data.get('label'))
+    with db() as conn:
+        account = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
+        if not account:
+            raise HTTPException(status_code=404, detail='Account not found')
+        conn.execute('update accounts set label = ? where id = ?', (label, account_id))
+        refreshed = conn.execute('select * from accounts where id = ?', (account_id,)).fetchone()
+        payload = account_payload(refreshed, account_capacity_payload(refreshed, conn))
+    return {'account': payload}
 
 
 @app.delete('/api/accounts/{account_id}')
