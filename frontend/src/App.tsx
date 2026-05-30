@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Activity, AlertTriangle, ArrowRight, BarChart3, CalendarClock, CheckCircle2, ChevronDown, ChevronRight, CircleUserRound, ClipboardList, Clock3, Database, Edit3, Eye, ExternalLink, FileArchive, FolderKanban, Image, Info, Link2, LogOut, Menu, Network, PanelLeftClose, PanelLeftOpen, Plus, RefreshCcw, Search, ShieldCheck, Play, Save, Square, Target, TrendingUp, Video, X, Zap } from 'lucide-react';
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -1722,7 +1722,7 @@ function TaskFormPage() {
               </select>
             </Field>
           </div>
-          <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr))]">
+          <div className="grid gap-3 md:grid-cols-3">
             <Check label="推文文本" checked={true} disabled onCheckedChange={() => undefined} />
             <Check label="图片" checked={true} disabled onCheckedChange={() => undefined} />
             <Check label="视频" checked={form.has_video} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_video: checked }))} />
@@ -2608,7 +2608,7 @@ function SchedulesPage() {
       <Card>
         <CardHeader><h3 className="font-semibold">{editingId ? `编辑计划 #${editingId}` : '新建计划'}</h3></CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 [grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr))]">
             <Field label="计划名称"><Input value={form.name} onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))} /></Field>
             <Field label="X账号">
               <select className="h-10 w-full rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3" value={form.account_id} onChange={(e) => setForm((prev) => ({ ...prev, account_id: Number(e.target.value) }))}>
@@ -3144,6 +3144,7 @@ function AccountsPage() {
     setBrowserLoginStatus(status);
     setBrowserLoginMessage(browserLoginStatusQuery.data?.message || '');
     if (status === 'completed') {
+      setBrowserLoginLabel('');
       queryClient.invalidateQueries({ queryKey: ['accounts'] });
     }
   }, [browserLoginStatusQuery.data, queryClient]);
@@ -3482,86 +3483,151 @@ function AccountsPage() {
       <Card>
         <CardContent className="p-0">
           <div className="overflow-auto">
-            <table className="w-full min-w-[1500px] border-collapse text-sm">
+            <table className="w-full min-w-[1320px] border-collapse text-sm">
               <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
                 <tr>
-                  <th className="px-4 py-3">ID</th>
-                  <th className="px-4 py-3">名称</th>
-                  <th className="px-4 py-3">用户名</th>
-                  <th className="px-4 py-3">状态</th>
-                  <th className="px-4 py-3">调度分</th>
-                  <th className="px-4 py-3">治理</th>
-                  <th className="px-4 py-3">检测时间</th>
-                  <th className="px-4 py-3">失败原因</th>
+                  <th className="w-16 px-4 py-3">ID</th>
+                  <th className="w-[240px] px-4 py-3">名称</th>
+                  <th className="w-[160px] px-4 py-3">用户名</th>
+                  <th className="w-[190px] px-4 py-3">状态</th>
+                  <th className="w-[160px] px-4 py-3">调度</th>
+                  <th className="w-[220px] px-4 py-3">额度 / 治理</th>
+                  <th className="w-[160px] px-4 py-3">检测时间</th>
+                  <th className="px-4 py-3">摘要</th>
                   <th className="px-4 py-3"></th>
                 </tr>
               </thead>
               <tbody>
-                {accounts.map((account) => (
-                  <tr key={account.id} className={cn('border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]', !USABLE_ACCOUNT_STATUSES.has(account.status) && 'bg-[rgba(248,113,113,0.08)] text-[hsl(var(--muted))]')}>
-                    <td className="px-4 py-3">#{account.id}</td>
-                    <td className="px-4 py-3 font-medium">{account.label}</td>
-                    <td className="px-4 py-3">{account.screen_name ? `@${account.screen_name}` : '-'}</td>
-                    <td className="px-4 py-3">
-                      <div className="space-y-1">
-                        <Badge tone={statusTone(account.status)}>{statusLabel(account.status)}</Badge>
-                        <div className="max-w-[220px] text-xs text-[hsl(var(--muted))]">{accountUsabilityDescription(account)}</div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">
-                      {account.capacity ? (
-                        <div className="min-w-[180px] space-y-2">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Badge tone={accountCapacityTone(account.capacity.level)}>{account.capacity.score} 分</Badge>
-                            <Badge tone={accountUsabilityTone(account)}>{accountUsabilityLabel(account)}</Badge>
-                            <span className="text-xs text-[hsl(var(--muted))]">{account.capacity.reason}</span>
-                          </div>
-                          <div className="h-1.5 overflow-hidden rounded-full bg-[hsl(var(--panel-soft))]">
-                            <div
-                              className={cn(
-                                'h-full rounded-full',
-                                account.capacity.score >= 70 ? 'bg-[hsl(var(--success))]' : account.capacity.score >= 40 ? 'bg-[hsl(var(--warning))]' : 'bg-[hsl(var(--danger))]',
-                              )}
-                              style={{ width: `${Math.max(0, Math.min(account.capacity.score, 100))}%` }}
+                {accounts.map((account) => {
+                  const expanded = expandedAccountId === account.id;
+                  const editing = editingAccountId === account.id;
+                  return (
+                    <Fragment key={account.id}>
+                      <tr className={cn('border-t border-[hsl(var(--line))] hover:bg-[hsl(var(--panel-soft))]', !USABLE_ACCOUNT_STATUSES.has(account.status) && 'bg-[rgba(248,113,113,0.08)] text-[hsl(var(--muted))]')}>
+                        <td className="px-4 py-2 whitespace-nowrap">#{account.id}</td>
+                        <td className="px-4 py-2">
+                          {editing ? (
+                            <Input
+                              value={editingAccountLabel}
+                              onChange={(event) => setEditingAccountLabel(event.target.value)}
+                              className="h-8"
+                              maxLength={80}
                             />
-                          </div>
-                          <div className="text-xs text-[hsl(var(--muted))]">
-                            API {account.capacity.api_remaining_estimate}/{account.capacity.api_budget_24h} · 任务 {account.capacity.task_remaining_24h}/{account.capacity.task_limit_24h}
-                          </div>
-                          {account.capacity.adaptive_policy && (
-                            <div className="flex flex-wrap items-center gap-2 text-xs text-[hsl(var(--muted))]">
-                              <Badge tone={accountCapacityTone(account.capacity.adaptive_policy.risk_level)}>
-                                {riskLevelLabel(account.capacity.adaptive_policy.risk_level)}
-                              </Badge>
-                              <span className="max-w-[240px] truncate">{account.capacity.adaptive_policy.recommended_action}</span>
-                            </div>
+                          ) : (
+                            <div className="max-w-[220px] truncate font-medium" title={account.label}>{account.label}</div>
                           )}
-                          <div className="text-xs text-[hsl(var(--muted))]">下次可用：{account.capacity.next_available_at || '现在'}</div>
-                        </div>
-                      ) : '-'}
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="space-y-1 text-xs text-[hsl(var(--muted))]">
-                        <div><Badge tone={account.tier === 'stable' ? 'success' : 'warning'}>{statusLabel(account.tier)}</Badge></div>
-                        <div>任务 {account.task_count} · 成功 {account.success_count} · 失败 {account.failure_count}</div>
-                        <div>上次使用：{account.last_used_at || '-'}</div>
-                        <div>冷却至：{account.cooldown_until || '-'}</div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3">{account.last_checked_at || '-'}</td>
-                    <td className="max-w-[280px] truncate px-4 py-3 text-[hsl(var(--muted))]" title={account.last_error || ''}>{account.last_error || '-'}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex justify-end gap-2">
-                        <Button variant="secondary" size="sm" onClick={() => checkAccount.mutate(account.id)} disabled={checkAccount.isPending}>
-                          检测
-                        </Button>
-                        <Button variant="danger" size="sm" onClick={() => deleteAccount.mutate(account.id)} disabled={deleteAccount.isPending}>
-                          删除
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                        </td>
+                        <td className="px-4 py-2">
+                          <div className="max-w-[140px] truncate">{account.screen_name ? `@${account.screen_name}` : '-'}</div>
+                        </td>
+                        <td className="px-4 py-2">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <Badge tone={statusTone(account.status)}>{statusLabel(account.status)}</Badge>
+                            <span className="min-w-0 truncate text-xs text-[hsl(var(--muted))]">{accountUsabilityDescription(account)}</span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-2">
+                          {account.capacity ? (
+                            <div className="flex items-center gap-2">
+                              <Badge tone={accountCapacityTone(account.capacity.level)}>{account.capacity.score} 分</Badge>
+                              <Badge tone={accountUsabilityTone(account)}>{accountUsabilityLabel(account)}</Badge>
+                            </div>
+                          ) : '-'}
+                        </td>
+                        <td className="px-4 py-2">
+                          <div className="max-w-[200px] truncate text-xs text-[hsl(var(--muted))]" title={accountQuotaSummary(account)}>
+                            {accountQuotaSummary(account)}
+                          </div>
+                        </td>
+                        <td className="px-4 py-2 whitespace-nowrap">{account.last_checked_at || '-'}</td>
+                        <td className="px-4 py-2">
+                          <div className="max-w-[260px] truncate text-[hsl(var(--muted))]" title={accountErrorSummary(account)}>{accountErrorSummary(account)}</div>
+                        </td>
+                        <td className="px-4 py-2">
+                          <div className="flex justify-end gap-2">
+                            {editing ? (
+                              <>
+                                <Button variant="secondary" size="sm" onClick={() => updateAccount.mutate({ id: account.id, label: editingAccountLabel.trim() })} disabled={updateAccount.isPending || !editingAccountLabel.trim()}>
+                                  <Save className="h-4 w-4" />
+                                  保存
+                                </Button>
+                                <Button variant="secondary" size="sm" onClick={() => { setEditingAccountId(null); setEditingAccountLabel(''); }}>
+                                  取消
+                                </Button>
+                              </>
+                            ) : (
+                              <>
+                                <Button variant="secondary" size="sm" onClick={() => { setEditingAccountId(account.id); setEditingAccountLabel(account.label); }}>
+                                  <Edit3 className="h-4 w-4" />
+                                  编辑
+                                </Button>
+                                <Button variant="secondary" size="sm" onClick={() => checkAccount.mutate(account.id)} disabled={checkAccount.isPending}>
+                                  检测
+                                </Button>
+                                <Button variant="danger" size="sm" onClick={() => deleteAccount.mutate(account.id)} disabled={deleteAccount.isPending}>
+                                  删除
+                                </Button>
+                              </>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setExpandedAccountId(expanded ? null : account.id)}
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[hsl(var(--line))] text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-soft))]"
+                              aria-label={expanded ? '收起账号详情' : '展开账号详情'}
+                            >
+                              {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                      {expanded && (
+                        <tr key={`${account.id}-details`} className="border-t border-[hsl(var(--line))] bg-[rgba(15,23,42,0.38)]">
+                          <td className="px-4 py-4" colSpan={9}>
+                            <div className="grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
+                              <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2">
+                                <div className="text-xs text-[hsl(var(--muted))]">状态详情</div>
+                                <div className="mt-1">{accountUsabilityDescription(account)}</div>
+                                <div className="mt-2 text-xs text-[hsl(var(--muted))]">检测：{account.last_checked_at || '-'}</div>
+                              </div>
+                              <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2">
+                                <div className="text-xs text-[hsl(var(--muted))]">调度能力</div>
+                                {account.capacity ? (
+                                  <>
+                                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                                      <Badge tone={accountCapacityTone(account.capacity.level)}>{account.capacity.score} 分</Badge>
+                                      <span>{account.capacity.reason}</span>
+                                    </div>
+                                    <div className="mt-2 text-xs text-[hsl(var(--muted))]">{accountQuotaSummary(account)}</div>
+                                    <div className="mt-1 text-xs text-[hsl(var(--muted))]">下次可用：{account.capacity.next_available_at || '现在'}</div>
+                                  </>
+                                ) : <div className="mt-1 text-[hsl(var(--muted))]">暂无调度评分</div>}
+                              </div>
+                              <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2">
+                                <div className="text-xs text-[hsl(var(--muted))]">治理</div>
+                                <div className="mt-1"><Badge tone={account.tier === 'stable' ? 'success' : 'warning'}>{statusLabel(account.tier)}</Badge></div>
+                                <div className="mt-2 text-xs text-[hsl(var(--muted))]">任务 {account.task_count} · 成功 {account.success_count} · 失败 {account.failure_count}</div>
+                                <div className="mt-1 text-xs text-[hsl(var(--muted))]">上次使用：{account.last_used_at || '-'}</div>
+                                <div className="mt-1 text-xs text-[hsl(var(--muted))]">冷却至：{account.cooldown_until || '-'}</div>
+                              </div>
+                              <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2">
+                                <div className="text-xs text-[hsl(var(--muted))]">检测 / 错误</div>
+                                {account.capacity?.adaptive_policy && (
+                                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                                    <Badge tone={accountCapacityTone(account.capacity.adaptive_policy.risk_level)}>
+                                      {riskLevelLabel(account.capacity.adaptive_policy.risk_level)}
+                                    </Badge>
+                                    <span>{account.capacity.adaptive_policy.recommended_action}</span>
+                                  </div>
+                                )}
+                                <div className="mt-2 whitespace-pre-wrap break-words text-xs text-[hsl(var(--muted))]">{account.last_error || account.capacity?.reason || '-'}</div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
                 {!accounts.length && (
                   <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={9}>还没有账号</td></tr>
                 )}
