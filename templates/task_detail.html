@@ -29,8 +29,8 @@
   <pre class="log">{{ log or "还没有日志" }}</pre>
 </section>
 
-<section class="panel">
-  <h2>文件</h2>
+<details class="panel advanced-section">
+  <summary>输出文件</summary>
   <table>
     <thead><tr><th>文件</th><th>大小</th></tr></thead>
     <tbody>
@@ -41,5 +41,5 @@
       {% endfor %}
     </tbody>
   </table>
-</section>
+</details>
 {% endblock %}

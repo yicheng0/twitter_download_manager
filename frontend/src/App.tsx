@@ -1374,9 +1374,9 @@ function TaskListPage() {
 function Metric({ title, value }: { title: string; value: number }) {
   return (
     <Card>
-      <CardContent>
-        <div className="text-sm text-[hsl(var(--muted))]">{title}</div>
-        <div className="mt-2 text-3xl font-semibold">{value}</div>
+      <CardContent className="py-4">
+        <div className="text-xs font-medium uppercase tracking-wide text-[hsl(var(--muted))]">{title}</div>
+        <div className="mt-2 text-2xl font-semibold tabular-nums">{value}</div>
       </CardContent>
     </Card>
   );
@@ -1385,9 +1385,9 @@ function Metric({ title, value }: { title: string; value: number }) {
 function InfoCard({ title, value }: { title: string; value: string }) {
   return (
     <Card>
-      <CardContent>
-        <div className="text-sm text-[hsl(var(--muted))]">{title}</div>
-        <div className="mt-2 break-words text-base font-semibold">{value}</div>
+      <CardContent className="py-4">
+        <div className="text-xs font-medium uppercase tracking-wide text-[hsl(var(--muted))]">{title}</div>
+        <div className="mt-2 break-words text-base font-semibold tabular-nums">{value}</div>
       </CardContent>
     </Card>
   );
@@ -2038,20 +2038,35 @@ function TaskFormPage() {
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, description, children }: { label: string; description?: string; children: React.ReactNode }) {
   return (
-    <label className="grid gap-2 text-sm font-medium">
-      <span>{label}</span>
+    <label className="grid gap-2 text-sm font-medium text-[hsl(var(--text))]">
+      <span className="flex min-h-5 items-center">{label}</span>
       {children}
+      {description && <span className="text-xs font-normal leading-5 text-[hsl(var(--muted))]">{description}</span>}
     </label>
   );
 }
 
 function Check({ label, checked, onCheckedChange, disabled = false }: { label: string; checked: boolean; onCheckedChange: (checked: boolean) => void; disabled?: boolean }) {
   return (
-    <label className={cn('flex min-h-11 items-center gap-3 rounded-lg border border-[hsl(var(--line))] px-3 py-2 text-sm', disabled && 'text-[hsl(var(--muted))]')}>
-      <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onCheckedChange(event.target.checked)} className="h-4 w-4" />
-      <span>{label}</span>
+    <label
+      className={cn(
+        'flex min-h-11 cursor-pointer items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-colors',
+        checked
+          ? 'border-[rgba(14,165,233,0.42)] bg-[rgba(14,165,233,0.12)] text-[hsl(var(--text))]'
+          : 'border-[hsl(var(--line))] bg-[rgba(15,23,42,0.28)] text-[hsl(var(--muted))] hover:bg-[hsl(var(--panel-soft))] hover:text-[hsl(var(--text))]',
+        disabled && 'cursor-not-allowed opacity-60 hover:bg-[rgba(15,23,42,0.28)]',
+      )}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onCheckedChange(event.target.checked)}
+        className="h-4 w-4 rounded border-[hsl(var(--line))] accent-[hsl(var(--primary))]"
+      />
+      <span className="min-w-0 truncate">{label}</span>
     </label>
   );
 }
@@ -2104,16 +2119,23 @@ function TimeRangePicker({
 function TaskDetailPage({ id }: { id: number }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [resultOffset, setResultOffset] = useState(0);
   const [resultQuery, setResultQuery] = useState('');
   const [resultSearch, setResultSearch] = useState('');
   const [mediaFilter, setMediaFilter] = useState('');
+  const [showFiles, setShowFiles] = useState(false);
   const resultLimit = 10;
   const { data, isLoading } = useQuery({ queryKey: ['task', id], queryFn: () => api.task(id), refetchInterval: 4000 });
   const { data: resultData, isLoading: resultsLoading, refetch: refetchResults } = useQuery({
     queryKey: ['task-items', id, resultOffset, resultSearch, mediaFilter],
     queryFn: () => api.taskItems(id, { offset: resultOffset, limit: resultLimit, q: resultSearch, has_media: mediaFilter }),
     refetchInterval: 4000,
+  });
+  const { data: filesData, isLoading: filesLoading } = useQuery({
+    queryKey: ['task-files', id],
+    queryFn: () => api.taskFiles(id),
+    enabled: showFiles,
   });
   const task = data?.task;
   const [copyStatus, setCopyStatus] = useState('');
@@ -2129,6 +2151,11 @@ function TaskDetailPage({ id }: { id: number }) {
     },
   });
 
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   if (isLoading && !task) return <div className="text-sm text-[hsl(var(--muted))]">加载中...</div>;
   if (!task) return <div>任务不存在</div>;
   const adaptiveChanges = Array.isArray(task.config?.adaptive_throttle_changes)
@@ -2138,7 +2165,8 @@ function TaskDetailPage({ id }: { id: number }) {
   const adaptiveThrottleApplied = task.config?.adaptive_throttle_applied === true;
   const configCount = Object.keys(task.config || {}).length;
   const logLineCount = task.log?.trim() ? task.log.trim().split(/\r?\n/).length : 0;
-  const fileCount = task.files?.length || 0;
+  const fileCount = task.files?.length ?? task.summary?.files ?? 0;
+  const outputFiles = filesData?.files || task.files || [];
 
   return (
     <div className="space-y-4">
@@ -2312,26 +2340,42 @@ function TaskDetailPage({ id }: { id: number }) {
         </CollapsibleTaskCard>
       </div>
 
-      <CollapsibleTaskCard title="文件" summary={`${fileCount} 个文件`} contentClassName="p-0">
-        <div className="overflow-auto">
-          <table className="w-full min-w-[800px] border-collapse text-sm">
-            <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
-              <tr><th className="px-4 py-3">文件</th><th className="px-4 py-3">大小</th></tr>
-            </thead>
-            <tbody>
-              {(task.files || []).map((file) => (
-                <tr key={file.name} className="border-t border-[hsl(var(--line))]">
-                  <td className="px-4 py-3">{file.name}</td>
-                  <td className="px-4 py-3">{file.size} bytes</td>
-                </tr>
-              ))}
-              {!task.files?.length && (
-                <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={2}>还没有输出文件</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </CollapsibleTaskCard>
+      <Card>
+        <CardHeader>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h3 className="font-semibold">输出文件</h3>
+              <div className="mt-1 text-sm text-[hsl(var(--muted))]">{fileCount ? `${fileCount} 个文件，可通过打包下载获取` : '暂无输出文件'}</div>
+            </div>
+            <Button variant="secondary" size="sm" onClick={() => setShowFiles((value) => !value)}>
+              {showFiles ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {showFiles ? '收起文件明细' : '查看输出文件'}
+            </Button>
+          </div>
+        </CardHeader>
+        {showFiles && (
+          <CardContent className="p-0">
+            <div className="overflow-auto">
+              <table className="w-full min-w-[800px] border-collapse text-sm">
+                <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
+                  <tr><th className="px-4 py-3">文件</th><th className="px-4 py-3">大小</th></tr>
+                </thead>
+                <tbody>
+                  {outputFiles.map((file) => (
+                    <tr key={file.name} className="border-t border-[hsl(var(--line))]">
+                      <td className="px-4 py-3">{file.name}</td>
+                      <td className="px-4 py-3">{file.size} bytes</td>
+                    </tr>
+                  ))}
+                  {!outputFiles.length && (
+                    <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={2}>{filesLoading ? '正在加载文件...' : '还没有输出文件'}</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        )}
+      </Card>
     </div>
   );
 }
@@ -2984,11 +3028,11 @@ function SchedulesPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-2xl font-semibold">定时任务</h2>
-        <p className="mt-1 text-sm text-[hsl(var(--muted))]">按每日或每周固定时间自动生成博主采集任务。</p>
-      </div>
-      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
+      <PageHeader
+        title="定时任务"
+        description="按每日、每周或新内容监控自动生成博主采集任务。"
+      />
+      {error && <AlertBanner tone="danger">{error}</AlertBanner>}
       <Card>
         <CardHeader><h3 className="font-semibold">{editingId ? `编辑计划 #${editingId}` : '新建计划'}</h3></CardHeader>
         <CardContent className="space-y-4">
@@ -3099,14 +3143,13 @@ function SchedulesPage() {
           )}
           <div className="flex justify-end gap-2">
             {editingId && <Button variant="secondary" onClick={() => { setEditingId(null); setForm(DEFAULT_SCHEDULE_FORM); }}>取消编辑</Button>}
-            <Button onClick={() => saveSchedule.mutate()} disabled={saveSchedule.isPending || !form.targets.trim()}>保存计划</Button>
+            <Button onClick={() => saveSchedule.mutate()} loading={saveSchedule.isPending} disabled={!form.targets.trim()}>保存计划</Button>
           </div>
         </CardContent>
       </Card>
       <Card>
         <CardContent className="p-0">
-          <div className="overflow-auto">
-            <table className="w-full min-w-[1120px] border-collapse text-sm">
+          <TableShell minWidth={1120}>
               <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
                 <tr><th className="px-4 py-3">计划</th><th className="px-4 py-3">状态</th><th className="px-4 py-3">周期</th><th className="px-4 py-3">目标</th><th className="px-4 py-3">下次执行</th><th className="px-4 py-3">失败</th><th className="px-4 py-3">最近任务</th><th className="px-4 py-3"></th></tr>
               </thead>
@@ -3132,10 +3175,9 @@ function SchedulesPage() {
                     <td className="px-4 py-3"><div className="flex justify-end gap-2"><Button variant="secondary" size="sm" onClick={() => runScheduleNow.mutate(schedule.id)}>立即执行</Button><Button variant="secondary" size="sm" onClick={() => editSchedule(schedule)}>编辑</Button><Button variant="secondary" size="sm" onClick={() => toggleSchedule.mutate(schedule.id)}>{schedule.enabled ? '停用' : '启用'}</Button><Button variant="danger" size="sm" onClick={() => deleteSchedule.mutate(schedule.id)}>删除</Button></div></td>
                   </tr>
                 ))}
-                {!schedules.length && <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={8}>暂无定时任务</td></tr>}
+                {!schedules.length && <tr><td className="px-4 py-6" colSpan={8}><EmptyState title="暂无定时任务" description="保存计划后会在这里显示执行状态、下次运行时间和最近任务。" icon={<CalendarClock className="h-5 w-5" />} /></td></tr>}
               </tbody>
-            </table>
-          </div>
+          </TableShell>
         </CardContent>
       </Card>
     </div>
@@ -3225,13 +3267,13 @@ function OperationLogsPage() {
   };
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-2xl font-semibold">运维日志</h2>
-        <p className="mt-1 text-sm text-[hsl(var(--muted))]">记录任务创建、调度、执行、失败分类和重试事件。{taskId ? `当前筛选任务 #${taskId}` : ''}{scheduleId ? `当前筛选计划 #${scheduleId}` : ''}</p>
-      </div>
-      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
-      {message && <div className="rounded-lg border border-[hsl(var(--success))] bg-[rgba(34,197,94,0.12)] px-3 py-2 text-sm text-[hsl(var(--success))]">{message}</div>}
-      <ActionBar>
+      <PageHeader
+        title="运维日志"
+        description={`记录任务创建、调度、执行、失败分类和重试事件。${taskId ? `当前筛选任务 #${taskId}` : ''}${scheduleId ? `当前筛选计划 #${scheduleId}` : ''}`}
+      />
+      {error && <AlertBanner tone="danger">{error}</AlertBanner>}
+      {message && <AlertBanner tone="success">{message}</AlertBanner>}
+      <FilterBar>
         <SelectMenu
           value={level}
           onValueChange={(value) => setLevel(value)}
@@ -3250,10 +3292,10 @@ function OperationLogsPage() {
         <Input className="w-40" type="date" value={endAt} onChange={(e) => { setEndAt(e.target.value); resetPage(); }} />
         <Button variant="secondary" onClick={() => { setLevel(''); setEventType(''); setErrorType(''); setQuery(''); setStartAt(''); setEndAt(''); setOffset(0); }}>清空筛选</Button>
         <Button variant="secondary" onClick={() => refetch()}><RefreshCcw className="h-4 w-4" />刷新</Button>
-        <Button variant="danger" onClick={handleDeleteFilteredLogs} disabled={deleteFilteredLogs.isPending || !total}>
-          {deleteFilteredLogs.isPending ? '删除中...' : hasFilter ? '删除筛选结果' : '删除全部日志'}
+        <Button variant="danger" onClick={handleDeleteFilteredLogs} loading={deleteFilteredLogs.isPending} disabled={!total}>
+          {hasFilter ? '删除筛选结果' : '删除全部日志'}
         </Button>
-      </ActionBar>
+      </FilterBar>
       <OperationLogTable logs={logs} nowMs={nowMs} onDelete={handleDeleteLog} deletingId={deleteLog.variables ?? null} />
       <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-[hsl(var(--muted))]">
         <div>共 {total} 条，当前 {total ? offset + 1 : 0}-{Math.min(offset + limit, total)}</div>
@@ -3348,16 +3390,16 @@ function ResultDbPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-2xl font-semibold">外部结果库</h2>
-        <p className="mt-1 text-sm text-[hsl(var(--muted))]">连接 PostgreSQL 或 MySQL 保存采集结果，任务队列和账号仍保留在本地 SQLite。</p>
-      </div>
-      {error && <div className="rounded-lg border border-[hsl(var(--danger))] bg-[rgba(248,113,113,0.12)] px-3 py-2 text-sm text-[hsl(var(--danger))]">{error}</div>}
-      {message && <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm text-[hsl(var(--muted))]">{message}</div>}
+      <PageHeader
+        title="外部结果库"
+        description="连接 PostgreSQL 或 MySQL 保存采集结果，任务队列和账号仍保留在本地 SQLite。"
+      />
+      {error && <AlertBanner tone="danger">{error}</AlertBanner>}
+      {message && <AlertBanner tone="neutral">{message}</AlertBanner>}
       {!data?.credential_key_configured && (
-        <div className="rounded-lg border border-[hsl(var(--warning))] bg-[rgba(251,191,36,0.12)] px-3 py-2 text-sm">
+        <AlertBanner tone="warning">
           未检测到 <span className="font-semibold">TW_WEB_CREDENTIAL_KEY</span>。本地模式会用会话密钥派生加密密钥；生产模式必须配置后才能保存密码。
-        </div>
+        </AlertBanner>
       )}
       <Card>
         <CardHeader><h3 className="font-semibold">{form.id ? `编辑连接 #${form.id}` : '新增连接'}</h3></CardHeader>
@@ -3388,10 +3430,10 @@ function ResultDbPage() {
           </div>
           <div className="flex justify-end gap-2">
             {form.id && <Button variant="secondary" onClick={() => setForm(DEFAULT_RESULT_DB_FORM)}>取消编辑</Button>}
-            <Button variant="secondary" onClick={() => testFormConnection.mutate()} disabled={testFormConnection.isPending || !canTestFormConnection}>
-              {testFormConnection.isPending ? '测试中...' : '测试连接'}
+            <Button variant="secondary" onClick={() => testFormConnection.mutate()} loading={testFormConnection.isPending} disabled={!canTestFormConnection}>
+              测试连接
             </Button>
-            <Button onClick={() => saveConfig.mutate()} disabled={saveConfig.isPending || !form.host || !form.database_name || !form.username}>
+            <Button onClick={() => saveConfig.mutate()} loading={saveConfig.isPending} disabled={!form.host || !form.database_name || !form.username}>
               保存连接
             </Button>
           </div>
@@ -3399,8 +3441,7 @@ function ResultDbPage() {
       </Card>
       <Card>
         <CardContent className="p-0">
-          <div className="overflow-auto">
-            <table className="w-full min-w-[1180px] border-collapse text-sm">
+          <TableShell minWidth={1180}>
               <thead className="bg-[hsl(var(--panel-soft))] text-left text-xs font-semibold uppercase tracking-wide text-[hsl(var(--muted))]">
                 <tr><th className="px-4 py-3">连接</th><th className="px-4 py-3">状态</th><th className="px-4 py-3">地址</th><th className="px-4 py-3">测试/同步</th><th className="px-4 py-3">错误</th><th className="px-4 py-3"></th></tr>
               </thead>
@@ -3422,10 +3463,9 @@ function ResultDbPage() {
                     </td>
                   </tr>
                 ))}
-                {!configs.length && <tr><td className="px-4 py-10 text-center text-[hsl(var(--muted))]" colSpan={6}>还没有外部数据库连接</td></tr>}
+                {!configs.length && <tr><td className="px-4 py-6" colSpan={6}><EmptyState title="还没有外部数据库连接" description="保存连接后可把采集结果同步到外部 PostgreSQL 或 MySQL。" icon={<Database className="h-5 w-5" />} /></td></tr>}
               </tbody>
-            </table>
-          </div>
+          </TableShell>
         </CardContent>
       </Card>
     </div>
@@ -4509,6 +4549,9 @@ function RunControlPage() {
   const [form, setForm] = useState<RunConfig>(DEFAULT_RUN_FORM);
   const [timePreset, setTimePreset] = useState<TimePreset>('all');
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [showLogs, setShowLogs] = useState(false);
+  const [logsCollapsedByUser, setLogsCollapsedByUser] = useState(false);
   const [proxyMode, setProxyMode] = useState<ProxyMode>('auto');
 
   useEffect(() => {
@@ -4567,6 +4610,16 @@ function RunControlPage() {
     return_code: null,
     log_version: 0,
   };
+  const isActiveRun = status.status === 'running' || status.status === 'stopping';
+  const isProblemRun = ['failed', 'stopped', 'rate_limited', 'auth_expired', 'network_failed', 'target_unavailable', 'api_changed'].includes(status.status);
+  const hasLogs = status.logs.length > 0;
+  const latestLog = hasLogs ? status.logs[status.logs.length - 1] : '';
+
+  useEffect(() => {
+    if (hasLogs && !logsCollapsedByUser) {
+      setShowLogs(true);
+    }
+  }, [hasLogs, logsCollapsedByUser, status.log_version]);
 
   const handleStart = () => {
     const errors = validateRunForm(form, proxies);
@@ -4590,45 +4643,47 @@ function RunControlPage() {
     <div className="space-y-4">
       <div>
         <h2 className="text-2xl font-semibold">运行控制</h2>
-        <p className="mt-1 text-sm text-[hsl(var(--muted))]">配置下载参数、启动任务并查看实时日志。</p>
+        <p className="mt-1 text-sm text-[hsl(var(--muted))]">填写博主用户名，选择时间范围后启动采集。</p>
       </div>
       <ActionBar>
         <Button onClick={handleStart} disabled={start.isPending}>
           <Play className="h-4 w-4" />
-          启动
+          启动采集
         </Button>
-        <Button variant="danger" onClick={() => stop.mutate()} disabled={stop.isPending}>
-          <Square className="h-4 w-4" />
-          停止
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={() => copyText(runCopyText(status)).then(() => setCopyStatus('已复制运行日志')).catch(() => setCopyStatus('复制失败，请手动选择日志'))}
-        >
-          复制日志
-        </Button>
+        {isActiveRun && (
+          <Button variant="danger" onClick={() => stop.mutate()} disabled={stop.isPending}>
+            <Square className="h-4 w-4" />
+            停止
+          </Button>
+        )}
       </ActionBar>
       <Card>
-        <CardHeader>
+        <CardHeader className="border-b-0">
           <div className="flex items-center justify-between gap-3">
             <div className="flex items-center gap-2">
               <Zap className="h-4 w-4 text-[hsl(var(--primary-dark))]" />
-              <h3 className="font-semibold">快捷模板</h3>
+              <h3 className="font-semibold">常用模板</h3>
             </div>
-            <div className="text-sm text-[hsl(var(--muted))]">点击后进入新建任务并填入参数</div>
+            <Button variant="ghost" size="sm" onClick={() => setShowTemplates((value) => !value)}>
+              {showTemplates ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              {showTemplates ? '收起' : '展开'}
+            </Button>
           </div>
         </CardHeader>
-        <CardContent>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-            {taskTemplates.map((template) => (
-              <TemplateCard
-                key={template.id}
-                template={template}
-                onClick={() => navigate(`/tasks/new?template=${encodeURIComponent(template.id)}`)}
-              />
-            ))}
-          </div>
-        </CardContent>
+        {showTemplates && (
+          <CardContent className="border-t border-[hsl(var(--line))]">
+            <div className="mb-3 text-sm text-[hsl(var(--muted))]">点击后进入新建任务并填入参数。</div>
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {taskTemplates.map((template) => (
+                <TemplateCard
+                  key={template.id}
+                  template={template}
+                  onClick={() => navigate(`/tasks/new?template=${encodeURIComponent(template.id)}`)}
+                />
+              ))}
+            </div>
+          </CardContent>
+        )}
       </Card>
 
       {preflightErrors.length > 0 && (
@@ -4666,9 +4721,7 @@ function RunControlPage() {
         <Card>
           <CardHeader><h3 className="font-semibold">配置</h3></CardHeader>
           <CardContent className="space-y-4">
-            <Field label="保存路径"><Input value={form.save_path} onChange={(e) => setForm((prev) => ({ ...prev, save_path: e.target.value }))} /></Field>
             <Field label="用户名列表"><Textarea rows={3} value={form.user_lst} onChange={(e) => setForm((prev) => ({ ...prev, user_lst: e.target.value }))} /></Field>
-            <Field label="Cookie"><Textarea rows={3} value={form.cookie} onChange={(e) => setForm((prev) => ({ ...prev, cookie: e.target.value }))} /></Field>
             <div className="grid gap-2 text-sm font-medium">
               <span>时间范围</span>
               <TimeRangePicker
@@ -4677,14 +4730,24 @@ function RunControlPage() {
                 error={timeError}
                 onPresetChange={applyTimePreset}
                 onCustomChange={applyCustomTimeRange}
+                compact
               />
             </div>
             <Button variant="secondary" onClick={() => setShowAdvanced((value) => !value)}>
               {showAdvanced ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-              {showAdvanced ? '收起高级设置' : '高级设置'}
+              {showAdvanced ? '收起更多设置' : '更多设置'}
             </Button>
             {showAdvanced && (
               <div className="space-y-4 rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] p-3">
+                <Field label="保存路径">
+                  <Input value={form.save_path} onChange={(e) => setForm((prev) => ({ ...prev, save_path: e.target.value }))} />
+                </Field>
+                <Field label="高级 Cookie / 旧版方式">
+                  <Textarea rows={3} value={form.cookie} onChange={(e) => setForm((prev) => ({ ...prev, cookie: e.target.value }))} />
+                </Field>
+                <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel))] px-3 py-2 text-sm text-[hsl(var(--muted))]">
+                  推荐优先在账号页授权账号；这里保留给已有 Cookie 的旧版启动方式。
+                </div>
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Check label="包含转推" checked={form.has_retweet} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, has_retweet: checked }))} />
                   <Check label="亮点" checked={form.high_lights} onCheckedChange={(checked) => setForm((prev) => ({ ...prev, high_lights: checked }))} />
@@ -4751,11 +4814,53 @@ function RunControlPage() {
           </CardContent>
         </Card>
         <Card>
-          <CardHeader><h3 className="font-semibold">日志</h3></CardHeader>
+          <CardHeader>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <h3 className="font-semibold">日志</h3>
+                {!showLogs && (
+                  <div className="mt-1 max-w-full truncate text-xs text-[hsl(var(--muted))]">
+                    {latestLog || status.message || '还没有日志'}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {(hasLogs || isProblemRun) && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => copyText(runCopyText(status)).then(() => setCopyStatus('已复制运行日志')).catch(() => setCopyStatus('复制失败，请手动选择日志'))}
+                  >
+                    复制日志
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setShowLogs((value) => {
+                      const next = !value;
+                      setLogsCollapsedByUser(!next);
+                      return next;
+                    });
+                  }}
+                >
+                  {showLogs ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                  {showLogs ? '收起' : '展开'}
+                </Button>
+              </div>
+            </div>
+          </CardHeader>
           <CardContent>
+            {showLogs ? (
               <div className="max-h-[640px] overflow-auto rounded-lg border border-[hsl(var(--line))] bg-[#020617] p-4 text-xs leading-6 text-slate-100">
                 {status.logs.length ? status.logs.map((line, index) => <div key={`${index}-${line}`}>{line}</div>) : '还没有日志'}
               </div>
+            ) : (
+              <div className="rounded-lg border border-[hsl(var(--line))] bg-[hsl(var(--panel-soft))] px-3 py-2 text-sm text-[hsl(var(--muted))]">
+                {hasLogs ? '日志已收起，需要排查时可展开查看。' : '还没有日志。启动采集后这里会显示运行记录。'}
+              </div>
+            )}
           </CardContent>
         </Card>
       </div>

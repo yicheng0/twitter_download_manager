@@ -6818,7 +6818,7 @@ async def api_create_task(request: Request, user=Depends(require_api_user)):
 @app.get('/api/tasks/{task_id}')
 def api_task_detail(task_id: int, user=Depends(require_api_user)):
     task = get_task_or_404(task_id, user)
-    return {'task': task_payload(task, include_config=True, include_log=True, include_files=True, include_preview=True)}
+    return {'task': task_payload(task, include_config=True, include_log=True, include_preview=True)}
 
 
 @app.get('/api/tasks/{task_id}/items')
@@ -6918,7 +6918,7 @@ def api_cancel_task(task_id: int, user=Depends(require_api_user)):
             conn.execute("update tasks set status = 'cancelled', finished_at = ?, process_id = null, error = ?, last_error_type = ?, locked_by = null, locked_at = null, heartbeat_at = null where id = ?", (now(), '用户取消', 'cancelled', task_id))
     with db() as conn:
         refreshed = conn.execute('select tasks.*, users.username from tasks join users on users.id = tasks.user_id where tasks.id = ?', (task_id,)).fetchone()
-    return {'task': task_payload(refreshed, include_config=True, include_log=True, include_files=True, include_preview=True)}
+    return {'task': task_payload(refreshed, include_config=True, include_log=True, include_preview=True)}
 
 
 @app.delete('/api/tasks/{task_id}')

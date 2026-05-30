@@ -79,6 +79,7 @@ export const api = {
   },
   tasks: () => request<{ tasks: Task[] }>('/api/tasks'),
   task: (id: number) => request<{ task: Task }>(`/api/tasks/${id}`),
+  taskFiles: (id: number) => request<{ files: Array<{ name: string; size: number }> }>(`/api/tasks/${id}/files`),
   bloggers: (params?: { q?: string; category_id?: number | null }) => {
     const query = new URLSearchParams();
     if (params?.q) query.set('q', params.q);
