@@ -683,6 +683,7 @@ def apply_schema_migrations():
             (5, migration_tracked_bloggers),
             (6, migration_schedule_monitor_states),
             (7, migration_blogger_categories_and_profiles),
+            (8, migration_task_api_call_budget),
         ]
         for version, migration in migrations:
             if current >= version:
@@ -964,6 +965,11 @@ def migration_schedule_monitor_states(conn):
 def migration_blogger_categories_and_profiles(conn):
     create_tracked_bloggers_table(conn)
     create_blogger_categories_table(conn)
+
+
+def migration_task_api_call_budget(conn):
+    # api_call_budget 曾被补加到已执行过的 baseline 迁移里，老库不会自动获得该列
+    ensure_column(conn, 'tasks', 'api_call_budget', 'integer not null default 0')
 
 
 def create_account_warmup_runs_table(conn):
