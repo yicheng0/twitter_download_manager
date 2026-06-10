@@ -4166,12 +4166,19 @@ def validate_account_cookie(cookie):
         'authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA',
         'cookie': cookie,
         'x-csrf-token': ct0,
+        'x-twitter-auth-type': 'OAuth2Session',
+        'x-twitter-active-user': 'yes',
     }
     try:
-        r = httpx.get('https://x.com/i/api/1.1/account/settings.json', headers=headers, timeout=15)
+        # v1.1 account/settings.json 已被 X 废弃，对有效会话也返回 404 code 34；
+        # 改用网页端在用的 badge_count：200=会话有效，401/403=失效。
+        r = httpx.get(
+            'https://x.com/i/api/2/badge_count/badge_count.json?supports_ntab_urt=1',
+            headers=headers,
+            timeout=15,
+        )
         if r.status_code == 200:
-            data = r.json()
-            return True, data.get('screen_name'), ''
+            return True, None, ''
         return False, None, f'HTTP {r.status_code}: {r.text[:200]}'
     except Exception as exc:
         return False, None, str(exc)
